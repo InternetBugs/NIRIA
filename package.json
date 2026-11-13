@@ -1,0 +1,54 @@
+{
+  "name": "niria",
+  "version": "0.20.0",
+  "private": true,
+  "type": "module",
+  "description": "NIRIA local-first virtual companion",
+  "main": "desktop/main.mjs",
+  "author": "NIRIA contributors",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node prototype/server.mjs",
+    "test": "node --test",
+    "check": "node scripts/check.mjs",
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "test:companion": "node scripts/browser-smoke.mjs --companion",
+    "desktop": "electron .",
+    "test:desktop": "node scripts/desktop-smoke.mjs",
+    "test:packaged": "node scripts/desktop-smoke.mjs --packaged",
+    "test:storage": "node scripts/storage-benchmark.mjs",
+    "test:sync-storage": "node scripts/sync-storage-benchmark.mjs",
+    "pack:win": "electron-builder --win dir --publish never",
+    "dist:win": "electron-builder --win nsis --publish never"
+  },
+  "build": {
+    "appId": "app.niria.companion",
+    "productName": "NIRIA",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**",
+      "core/**",
+      "prototype/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "devDependencies": {
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2"
+  }
+}

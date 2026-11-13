@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>NIRIA · 在这里，慢慢相处</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/companion.css">
+  <script type="module" src="/companion.js"></script>
+</head>
+<body>
+  <nav class="rail" aria-label="主导航">
+    <a class="brand" href="/" aria-label="NIRIA 首页">N<span>✧</span></a>
+    <div class="rail-links">
+      <button class="nav-button selected" data-view="chat" aria-label="聊天" title="聊天"><span aria-hidden="true">☷</span><small>聊天</small></button>
+      <button class="nav-button" data-view="memories" aria-label="记忆" title="记忆"><span aria-hidden="true">◇</span><small>记忆</small></button>
+      <a class="nav-button" href="/avatar" aria-label="形象实验台" title="形象实验台"><span aria-hidden="true">✧</span><small>形象</small></a>
+    </div>
+    <button class="nav-button settings-nav" id="open-settings" aria-label="设置"><span aria-hidden="true">⚙</span><small>设置</small></button>
+  </nav>
+  <main class="shell">
+    <header class="app-header">
+      <div><span class="eyebrow">A LITTLE CLOSER, EVERY DAY</span><h1>在这里，慢慢相处。</h1></div>
+      <div class="header-actions"><button id="sync-alert" class="button quiet" hidden>处理同步冲突</button><span class="local-badge"><i></i>保存在这台电脑</span><button id="show-widget" class="button quiet" hidden>伴侣小窗 ↗</button></div>
+    </header>
+    <p id="desktop-warning" class="desktop-warning" role="status" hidden></p>
+    <div class="workspace">
+      <section class="companion-stage" aria-label="你的伴侣">
+        <div class="stage-top"><span class="stage-label">YOUR COMPANION</span><button id="edit-identity" class="text-button">编辑资料 ↗</button></div>
+        <div class="portrait-frame">
+          <canvas id="avatar-canvas" width="1024" height="1536" aria-label="伴侣形象" hidden></canvas>
+          <div id="avatar-empty" class="avatar-empty"><div class="moon" aria-hidden="true">✧</div><p>先认识彼此，<br>再慢慢收集日常。</p><label class="button image-upload">导入她的图片<input type="file" id="avatar-image" accept="image/png,image/jpeg,image/webp"></label></div>
+          <span class="orbit orbit-one" aria-hidden="true"></span><span class="orbit orbit-two" aria-hidden="true"></span>
+        </div>
+        <div class="companion-caption"><h2 id="companion-name">Niria</h2><p id="relationship-caption">正在彼此了解的长期伴侣</p></div>
+        <div class="stage-bottom"><span id="care-status">主动关心已关闭</span><button id="open-live2d" class="text-button">导入 Live2D</button><label class="text-button image-upload">导入动作包<input type="file" id="avatar-package" accept=".json,application/json"></label></div>
+      </section>
+      <section class="conversation" id="view-chat" aria-label="聊天">
+        <header class="panel-heading"><div><h2 id="chat-title">和 Niria 聊聊</h2><p id="connection-status">配置对话服务，开始第一次聊天。</p></div><div class="chat-tools"><button id="open-history" class="text-button">回顾聊天</button><button id="preview-context" class="text-button">发送范围</button></div></header>
+        <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
+        <form id="composer" class="composer">
+          <label class="sr-only" for="message-input">想说些什么</label>
+          <textarea id="message-input" rows="3" maxlength="16000" placeholder="今天有什么想和她说的？"></textarea>
+          <div class="composer-bottom"><span id="request-hint">每次聊天 1 次请求；自动记忆最多额外 1 次</span><button id="stop-chat" type="button" class="button quiet" hidden>停止</button><button id="send-message" type="submit" class="button primary">发送 <span aria-hidden="true">↗</span></button></div>
+        </form>
+        <p class="composer-note">Enter 发送 · Shift + Enter 换行 · 模型连接可更换，共同记忆留在这里</p>
+      </section>
+      <section class="conversation" id="view-memories" aria-label="长期记忆" hidden>
+        <header class="panel-heading"><div><h2>我们记得的事</h2><p>可以纠正、删除，也可以一起忘记。</p></div><button id="add-memory" class="button quiet">＋ 添加记忆</button></header>
+        <div class="memory-toolbar">
+          <label class="sr-only" for="memory-filter">搜索记忆</label><input id="memory-filter" type="search" maxlength="200" placeholder="找一件记得的事…">
+          <label class="sr-only" for="memory-state">记忆状态</label><select id="memory-state" aria-label="记忆状态"><option value="all">全部状态</option><option value="pending">待确认</option><option value="confirmed">已确认且有效</option><option value="inactive">停用、过期或冲突</option></select>
+          <label class="sr-only" for="memory-kind">记忆类型</label><select id="memory-kind" aria-label="记忆类型"><option value="all">全部类型</option><option value="fact">明确资料</option><option value="experience">共同经历</option><option value="inference">未确认线索</option></select>
+          <button id="memory-clear" class="text-button">清除筛选</button><span id="memory-count"></span>
+        </div>
+        <p id="memory-status" class="memory-status" role="status"></p>
+        <div id="memory-list" class="memory-list"></div>
+        <div class="memory-pagination"><button id="memory-newer" class="button quiet" disabled>更新一页</button><button id="memory-latest" class="text-button">回到最近</button><button id="memory-older" class="button quiet" disabled>更早一页</button></div>
+      </section>
+    </div>
+    <div id="speech-player" class="speech-player" hidden><span>合成声音 · 由你选择的朗读服务生成</span><audio id="speech-audio" controls></audio><button id="speech-stop" class="text-button">停止朗读</button></div>
+    <footer class="app-footer"><span>NIRIA <small>0.20 · 本地预览</small></span><span>一位伴侣，一起积累的生活。</span></footer>
+  </main>
+  <p id="notice" class="notice" role="status" hidden></p>
+
+  <dialog id="history-dialog" class="history-dialog" aria-labelledby="history-title">
+    <div class="dialog-heading"><div><span class="eyebrow">THE DAYS WE REMEMBER</span><h2 id="history-title">回顾我们的聊天</h2></div><button class="close-button" data-close="history-dialog" aria-label="关闭聊天回顾">×</button></div>
+    <form id="history-search" class="history-search">
+      <label class="sr-only" for="history-query">查找聊天中出现过的文字</label>
+      <input id="history-query" type="search" maxlength="200" placeholder="找一句话，或一件一起聊过的事…" autocomplete="off">
+      <button class="button primary" type="submit">查找</button><button id="history-clear" class="text-button" type="button">清除</button>
+    </form>
+    <p class="hint">只在本机查找这些文字，不调用模型。可查看每条结果前后的聊天。</p>
+    <p id="history-status" class="history-status" role="status"></p>
+    <div id="history-results" class="history-results" aria-label="聊天记录"></div>
+    <div class="history-pagination"><button id="history-older" class="button quiet" disabled>更早一页</button><button id="history-latest" class="text-button">回到最近</button><button id="history-newer" class="button quiet" disabled>更新一页</button></div>
+  </dialog>
+  <dialog id="settings-dialog" class="settings-dialog">
+    <div class="dialog-heading"><div><span class="eyebrow">MAKE YOURSELF AT HOME</span><h2>相处的方式</h2></div><button class="close-button" data-close="settings-dialog" aria-label="关闭">×</button></div>
+    <div class="settings-tabs" role="tablist" aria-label="设置分类">
+      <button role="tab" aria-selected="true" data-tab="connection">对话服务</button><button role="tab" aria-selected="false" data-tab="identity">伴侣资料</button><button role="tab" aria-selected="false" data-tab="privacy">记忆与关心</button><button role="tab" aria-selected="false" data-tab="speech">朗读</button><button role="tab" aria-selected="false" data-tab="sync">多端同步</button><button role="tab" aria-selected="false" data-tab="backup">备份与调用</button>
+    </div>
+    <section data-settings="connection">
+      <form id="connection-form">
+        <p class="copy">使用你选择的 Chat Completions 服务。更换模型会延续同一位伴侣。</p>
+        <label class="field">API 根地址<input id="chat-base" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" required></label>
+        <label class="field">模型名称<input id="chat-model" maxlength="150" placeholder="填写服务提供的模型名称" required></label>
+        <label class="field">API 密钥<input id="chat-key" type="password" maxlength="4096" placeholder="本机免密服务可留空" autocomplete="off"></label>
+        <label class="check"><input id="chat-reuse" type="checkbox">留空时继续使用当前密钥</label>
+        <label class="check"><input id="chat-remember" type="checkbox">在此电脑安全记住对话配置</label>
+        <p class="hint">记住配置使用 Windows 系统加密，默认关闭；不勾选时仅本次进程使用。更换服务地址需要重新填写密钥，或取消保留以连接免密服务。图片编辑单独配置。</p>
+        <div class="dialog-actions"><button id="test-connection" type="button" class="button quiet">测试连接（1 次请求）</button><button type="submit" class="button primary">应用连接</button></div>
+      </form>
+    </section>
+    <section data-settings="speech" hidden>
+      <form id="speech-form">
+        <p class="copy">使用独立的语音合成服务。只发送选中的伴侣回复文本，不发送整段聊天、角色资料或记忆。播放的是合成声音。</p>
+        <label class="field">朗读 API 根地址<input id="speech-base" type="url" required placeholder="https://api.example/v1" autocomplete="off"></label>
+        <div class="two-columns"><label class="field">朗读模型<input id="speech-model" maxlength="150" required></label><label class="field">声音名称<input id="speech-voice" maxlength="150" required></label></div>
+        <label class="field">朗读服务密钥<input id="speech-key" type="password" maxlength="4096" autocomplete="off" placeholder="本机免密服务可留空"></label>
+        <label class="check"><input id="speech-reuse" type="checkbox">留空时继续使用当前密钥</label>
+        <label class="check"><input id="speech-remember" type="checkbox">在此电脑安全记住朗读配置</label>
+        <label class="check"><input id="speech-auto" type="checkbox">自动朗读应用打开后收到的新回复</label>
+        <label class="field compact">每日最多请求次数<input id="speech-limit" type="number" min="1" max="100" value="20"></label>
+        <p class="hint">每条回复 1 次语音请求，失败和测试也计入每日上限，不自动重试。最长朗读 4096 字符；使用 /audio/speech 接口并要求 WAV 输出。记住配置时，重启会恢复你保存的自动朗读选项；配置不会立即调用服务。</p>
+        <div class="dialog-actions"><button id="speech-test" type="button" class="button quiet">试听测试（1 次请求）</button><button class="button primary" type="submit">应用朗读设置</button></div>
+      </form>
+    </section>
+    <section data-settings="identity" hidden>
+      <form id="identity-form">
+        <div class="two-columns"><label class="field">她的名字<input id="identity-name" maxlength="80" required></label><label class="field">她如何称呼你<input id="identity-user" maxlength="80" placeholder="你喜欢的称呼"></label></div>
+        <label class="field">性格与背景<textarea id="identity-persona" rows="3" maxlength="4000" required></textarea></label>
+        <label class="field">说话方式<textarea id="identity-style" rows="2" maxlength="2000" required></textarea></label>
+        <label class="field">目前的关系<textarea id="identity-relationship" rows="2" maxlength="2000" required></textarea></label>
+        <p class="hint">这些是稳定的核心设定。聊天和自动记忆不会自行改写它们，保存时会停止正在进行的旧请求。</p>
+        <div class="dialog-actions"><button class="button primary" type="submit">保存资料</button></div>
+      </form>
+    </section>
+    <section data-settings="privacy" hidden>
+      <form id="privacy-form">
+        <h3>记忆</h3>
+        <label class="check"><input type="checkbox" id="allow-model">默认允许记忆发送给对话模型</label>
+        <label class="check"><input type="checkbox" id="allow-sync">默认允许记忆参与加密同步</label>
+        <label class="check"><input type="checkbox" id="auto-memory">自动从我的消息整理记忆</label>
+        <label class="field compact">每日最多整理次数<input id="memory-limit" type="number" min="0" max="50"></label>
+        <p class="hint">整理一次会额外调用一次对话模型，最多产生三条待确认记忆。单条记忆可以覆盖默认权限；禁止发送的记忆及其关联对话会从近期上下文排除。</p>
+        <h3>偶尔关心你</h3>
+        <label class="check"><input type="checkbox" id="care-enabled">应用运行时，允许她主动问候</label>
+        <div class="two-columns"><label class="field">至少间隔（分钟）<input id="care-interval" type="number" min="30" max="1440"></label><label class="field">每日最多次数<input id="care-limit" type="number" min="1" max="10"></label></div>
+        <div class="two-columns"><label class="field">免打扰开始（小时）<input id="quiet-start" type="number" min="0" max="23"></label><label class="field">免打扰结束（小时）<input id="quiet-end" type="number" min="0" max="23"></label></div>
+        <p class="hint">按这台电脑的本地时间执行；相同开始与结束表示不设免打扰。每条问候 1 次模型请求，关闭应用后停止，错过的问候不会补发。</p>
+        <div class="dialog-actions"><button class="button primary" type="submit">保存相处设置</button></div>
+      </form>
+    </section>
+    <section data-settings="sync" hidden>
+      <p class="copy">使用你自建或选择的 WebDAV。资料在这台电脑加密后上传；配对码包含解密密钥，请像备份口令一样保管。服务登录与解密密钥不进入聊天模型，也不上传。</p>
+      <form id="sync-form">
+        <label class="field">WebDAV 文件夹地址<input id="sync-base" type="url" required placeholder="https://cloud.example/remote.php/dav/files/你的账号/" autocomplete="off"></label>
+        <div class="two-columns"><label class="field">账号<input id="sync-user" maxlength="256" autocomplete="off"></label><label class="field">应用专用密码<input id="sync-password" type="password" maxlength="4096" autocomplete="off"></label></div>
+        <label class="check"><input id="sync-reuse" type="checkbox">密码留空时继续使用当前密码</label>
+        <label class="check"><input id="sync-remember" type="checkbox">在此电脑安全记住 WebDAV 连接</label>
+        <label class="check"><input id="sync-auto" type="checkbox">解锁后，每五分钟自动检查一次</label>
+        <p class="hint">记住连接和记住配对码分别控制。两者都保存且允许自动检查时，重启后会按设置继续同步。应用连接本身不会上传资料。Nextcloud 是目标验证服务，尚未经真实服务实测。</p>
+        <div class="dialog-actions"><button class="button primary" type="submit">应用同步连接</button></div>
+      </form>
+      <div class="sync-divider"></div>
+      <p id="sync-status" class="copy">同步未配置</p>
+      <div class="backup-actions"><button id="sync-create" class="button quiet">首台设备创建空间</button><button id="sync-pairing" class="button quiet">显示配对码</button></div>
+      <label class="field sync-code-field">配对码<textarea id="sync-code" rows="3" maxlength="1000" spellcheck="false" autocomplete="off" placeholder="NIRIA1.…"></textarea></label>
+      <label class="check"><input id="pair-remember" type="checkbox">在此电脑安全记住配对码，下次自动解锁</label>
+      <div class="backup-actions"><button id="sync-unlock" class="button quiet">用配对码解锁</button><button id="sync-join" class="button quiet">新设备加入并恢复</button></div>
+      <button id="sync-remember-pair" class="text-button">应用配对码保存选项</button>
+      <p class="hint">加入并恢复仅允许在空白设备进行，已有资料不会被静默替换。配对码不包含 WebDAV 密码，新设备需要自行配置连接。丢失所有设备和配对码后无法解密服务端资料。</p>
+      <div class="dialog-actions"><button id="sync-probe" class="button quiet">检查服务能力</button><button id="sync-run" class="button primary">立即同步</button><button id="sync-stop" class="button quiet">停止</button><button id="sync-lock" class="button quiet">锁定并断开</button></div>
+      <div class="sync-divider"></div>
+      <h3>更换同步密钥</h3>
+      <p class="copy">配对码由所有设备共享。更换后，其他设备都需输入新码。若设备丢失，请同时在 WebDAV 服务端撤销它的登录凭据。旧设备已经保存的资料及服务端历史副本无法通过换钥删除。</p>
+      <p id="rotation-status" class="hint" role="status">准备只生成配对码，不上传资料。自动同步会暂停，完成后可手动重新开启。</p>
+      <button id="rotation-prepare" class="button quiet">准备新配对码</button>
+      <div id="rotation-plan" hidden>
+        <label class="field">这次换钥的新配对码<textarea id="rotation-code" rows="3" readonly spellcheck="false" autocomplete="off"></textarea></label>
+        <button id="rotation-download" class="button quiet">保存换钥恢复文件</button>
+        <p class="hint">恢复文件含新旧两个秘密配对码，未加密，请离线安全保管；它不包含聊天或 WebDAV 密码。下载后请确认文件确已保存。只有下一步确认换钥才会重写远端当前文件。</p>
+        <label class="check"><input id="rotation-saved" type="checkbox">我已保存恢复文件，能找回新旧两个配对码</label>
+        <div class="backup-actions"><button id="rotation-activate" class="button primary" disabled>确认更换远端密钥</button><button id="rotation-cancel" class="button quiet">取消本次准备</button></div>
+      </div>
+      <div id="rotation-recovery" hidden>
+        <p class="copy">上次换钥结果待核对，上传已暂停。先填入恢复文件中的新配对码核对；若不能解密，再用原配对码核对。核对只读取远端，不会上传或重复换钥。</p>
+        <label class="field">本次换钥保存的配对码<textarea id="rotation-recovery-code" rows="3" maxlength="1000" spellcheck="false" autocomplete="off"></textarea></label>
+        <button id="rotation-recover" class="button primary">只读核对换钥结果</button>
+      </div>
+      <div id="sync-conflicts" class="sync-conflicts"></div>
+    </section>
+    <section data-settings="backup" hidden>
+      <h3>加密保留共同记忆</h3><p class="copy">备份包含伴侣身份、聊天、记忆、遗忘标记与已保存形象，不包含服务密钥。用同一个口令在另一台电脑恢复。</p>
+      <label class="field">备份 / 恢复口令<input id="backup-password" type="password" minlength="10" maxlength="256" autocomplete="off" placeholder="至少 10 个字符，请单独妥善保管"></label>
+      <div class="backup-actions"><button id="export-backup" class="button primary">导出加密备份</button><label class="button quiet image-upload">选择备份恢复<input id="restore-backup" type="file" accept=".niria,application/json"></label></div>
+      <p class="hint">恢复会替换本机资料。本机已有的删除标记会继续生效；新电脑仍需重新配置服务。当前本机数据库为普通 SQLite 文件，只有导出备份经过加密。</p>
+      <h3 class="calls-heading">最近的服务调用</h3><div id="calls-list" class="calls-list"></div>
+      <h3 class="calls-heading">此设备保存的服务配置</h3>
+      <p id="credential-status" class="hint"></p>
+      <button id="forget-credentials" class="button quiet">清除本机保存配置</button>
+      <p class="hint">只清除持久保存的连接和配对码，当前会话可继续使用；聊天、记忆和远端资料保留。此功能不会撤销第三方服务上的密钥。</p>
+    </section>
+  </dialog>
+  <dialog id="edit-dialog">
+    <form id="edit-form">
+      <div class="dialog-heading"><h2 id="edit-title">编辑记忆</h2><button type="button" class="close-button" data-close="edit-dialog" aria-label="关闭">×</button></div>
+      <label class="field"><span id="edit-label">内容</span><textarea id="edit-content" rows="5" maxlength="2000" required></textarea></label>
+      <fieldset id="edit-memory-fields" class="memory-edit-fields" hidden>
+        <label class="field">记忆类型<select id="edit-memory-kind"><option value="fact">明确资料</option><option value="experience">共同经历</option><option value="inference">未确认线索</option></select></label>
+        <label class="check"><input id="edit-memory-permanent" type="checkbox" checked>长期保留，不设置到期时间</label>
+        <label class="field">到期时间<input id="edit-memory-expiry" type="datetime-local" disabled><span class="hint">按这台电脑的本地时间保存。到期后停止引用，原记录继续保留，可再次调整期限。</span></label>
+      </fieldset>
+      <p class="hint" id="edit-hint">手动纠正会成为你确认的资料，不再依赖原来的消息。</p>
+      <div class="dialog-actions"><button type="button" class="button quiet" data-close="edit-dialog">取消</button><button type="submit" class="button primary">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="forget-dialog" class="forget-dialog" aria-labelledby="forget-title">
+    <div class="dialog-heading"><div><span class="eyebrow">CHOOSE WHAT TO LET GO</span><h2 id="forget-title">忘记这些记录</h2></div><button class="close-button" data-close="forget-dialog" aria-label="关闭遗忘清单">×</button></div>
+    <p id="forget-counts" class="forget-counts"></p>
+    <p class="hint">按已记录的来源与回复关系计算，包含关联的冲突版本。只列本机已知记录；其他设备上线同步时，也会处理与遗忘来源相关的记录。</p>
+    <p id="forget-status" class="forget-status" role="status"></p>
+    <div id="forget-list" class="forget-list" aria-label="将删除的记录"></div>
+    <div class="forget-list-actions"><button id="forget-more" class="text-button" hidden>列出更多记录</button><button id="forget-refresh" class="text-button">重新核对清单</button></div>
+    <p class="hint">删除标记用于防止旧记录自动恢复；已有备份、服务器历史版本及其他设备副本需单独管理。</p>
+    <div class="dialog-actions"><button class="button quiet" data-close="forget-dialog">取消</button><button id="forget-confirm" class="button primary" disabled>确认遗忘清单中的记录</button></div>
+  </dialog>
+  <dialog id="live2d-dialog" class="live2d-dialog" aria-labelledby="live2d-title">
+    <div class="dialog-heading"><h2 id="live2d-title">导入 Live2D 模型</h2><button class="close-button" data-close="live2d-dialog" aria-label="关闭 Live2D 预览">×</button></div>
+    <p class="hint">选择完整的导出模型文件夹。在本机检查并预览，确认采用后更换伴侣形象。</p>
+    <label class="button quiet image-upload">选择模型文件夹<input id="live2d-folder" type="file" webkitdirectory multiple></label>
+    <label class="field">模型描述<select id="live2d-model" disabled><option value="">选择模型</option></select></label>
+    <p id="live2d-summary" class="hint"></p>
+    <fieldset id="live2d-bindings" disabled>
+      <label class="field">待机动作<select id="live2d-idle"><option value="">不播放待机动作</option></select></label>
+      <div class="live2d-expression-grid">
+        <label class="field">微笑对应的表情<select id="live2d-map-smile"><option value="">不映射</option></select></label>
+        <label class="field">疑惑对应的表情<select id="live2d-map-curious"><option value="">不映射</option></select></label>
+        <label class="field">害羞对应的表情<select id="live2d-map-shy"><option value="">不映射</option></select></label>
+      </div>
+    </fieldset>
+    <p id="live2d-runtime-status" class="hint"></p>
+    <p class="hint">Live2D Cubism SDK © Live2D Inc. <a href="/vendor/live2d/NOTICE.md" download="NIRIA-Live2D-Notice.md">组件许可说明</a></p>
+    <p id="live2d-status" class="hint" role="status"></p>
+    <canvas id="live2d-preview-canvas" width="512" height="768" aria-label="Live2D 模型预览" hidden></canvas>
+    <label class="field">预览表情<select id="live2d-preview-expression" disabled><option value="neutral">原始表情</option></select></label>
+    <div class="dialog-actions"><button class="button quiet" data-close="live2d-dialog">取消</button><button id="live2d-preview" class="button quiet" disabled>本机预览</button><button id="live2d-adopt" class="button primary" disabled>采用这个模型</button></div>
+  </dialog>
+  <dialog id="context-dialog"><div class="dialog-heading"><h2>下一次发送范围</h2><button class="close-button" data-close="context-dialog" aria-label="关闭">×</button></div><div id="context-content" class="context-content" aria-live="polite"></div><div class="dialog-actions"><button id="context-refresh" class="button quiet">重新核对</button></div></dialog>
+</body>
+</html>

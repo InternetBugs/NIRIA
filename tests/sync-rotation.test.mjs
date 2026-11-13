@@ -1,0 +1,264 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { CompanionStore } from "../core/store.mjs";
+import { SyncService, parsePairing } from "../core/sync-service.mjs";
+import { unseal } from "../core/sync-model.mjs";
+import { davFixture } from "./fixtures/dav.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
+import { once } from "node:events";
+import { CompanionService } from "../core/chat-service.mjs";
+import { createPrototypeServer } from "../prototype/server.mjs";
+
+async function setup(t, options) {
+  const dav = await davFixture(options);
+  const store = new CompanionStore();
+  const sync = new SyncService(store);
+  sync.configure({ baseUrl: dav.baseUrl, auto: false });
+  const { code } = sync.createPair();
+  t.after(async () => { sync.lock(); store.close(); await dav.close(); });
+  return { dav, store, sync, code };
+}
+const remoteObject = (dav) => [...dav.objects].find(([path]) => path.endsWith("/state.niria"))[1];
+const activate = (sync, plan) => sync.rotation.activate({ id: plan.id, confirmed: true });
+test("rotation is local until confirmed, idempotently prepares a code, and does not expose keys in status or metadata", async (t) => {
+  const { sync, code, dav, store } = await setup(t);
+  const plan = sync.rotation.prepare();
+  assert.deepEqual(sync.rotation.prepare(), plan);
+  assert.notEqual(plan.code, code);
+  assert.equal(plan.previousCode, code);
+  assert.equal(dav.calls.length, 0);
+  assert.equal(await sync.tick(), false);
+  await assert.rejects(sync.sync(), /取消|完成/);
+  await assert.rejects(sync.rotation.activate({ id: plan.id, confirmed: false }), /保存/);
+  await assert.rejects(sync.rotation.activate({ id: "outdated", confirmed: true }), /变化/);
+  for (const serialized of [JSON.stringify(sync.status()), JSON.stringify(sync.meta), JSON.stringify(store.exportData())]) {
+    assert.ok(!serialized.includes(plan.code) && !serialized.includes(parsePairing(plan.code).key.toString("base64url")));
+  }
+  sync.rotation.cancel();
+  assert.equal(sync.exportPair().code, code);
+  assert.equal(dav.calls.length, 0);
+});
+test("rotation conditionally replaces the existing encrypted object; old key stops reading and the same companion continues", async (t) => {
+  const { sync, code, dav, store } = await setup(t);
+  store.addUser("共同经历");
+  await sync.sync();
+  const previous = Buffer.from(remoteObject(dav).data);
+  const plan = sync.rotation.prepare();
+  const result = await activate(sync, plan);
+  assert.equal(result.rotation.pending, false);
+  assert.equal(sync.exportPair().code, plan.code);
+  assert.equal(dav.objects.size, 1);
+  const old = parsePairing(code), next = parsePairing(plan.code);
+  assert.throws(() => unseal(remoteObject(dav).data.toString(), old.key, old.vaultId, old.identityId), /解密/);
+  assert.equal(unseal(previous.toString(), old.key, old.vaultId, old.identityId).records.some((r) => r.kind === "message"), true);
+  assert.equal(unseal(remoteObject(dav).data.toString(), next.key, next.vaultId, next.identityId).identityId, store.state.identity.id);
+  assert.throws(() => sync.unlock(code), /停用/);
+  await sync.sync();
+  assert.equal(store.state.messages[0].content, "共同经历");
+  assert.ok(dav.calls.filter((c) => c.method === "PUT" && c.path.endsWith("state.niria")).every((c) => c.headers["if-match"] || c.headers["if-none-match"]));
+});
+test("existing peer retains offline changes, rejects upload with old key, then accepts the new code without a new companion", async (t) => {
+  const { sync, code, dav, store } = await setup(t);
+  await sync.sync();
+  const other = new CompanionStore(), peer = new SyncService(other);
+  t.after(() => { peer.lock(); other.close(); });
+  peer.configure({ baseUrl: dav.baseUrl, auto: false });
+  await peer.join(code);
+  other.addUser("另一端的离线消息");
+  const plan = sync.rotation.prepare();
+  await activate(sync, plan);
+  const before = Buffer.from(remoteObject(dav).data);
+  await assert.rejects(peer.sync(), /解密/);
+  assert.ok(remoteObject(dav).data.equals(before));
+  peer.unlock(plan.code);
+  await peer.sync(); await sync.sync();
+  assert.equal(other.state.identity.id, store.state.identity.id);
+  assert.equal(store.state.messages[0].content, "另一端的离线消息");
+  assert.throws(() => peer.unlock(code), /停用/);
+});
+test("rotation merges concurrent remote updates after ETag rejection and preserves edits made during its upload", async (t) => {
+  const { sync, code, dav, store } = await setup(t);
+  await sync.sync();
+  const other = new CompanionStore(), peer = new SyncService(other);
+  t.after(() => { peer.lock(); other.close(); });
+  peer.configure({ baseUrl: dav.baseUrl, auto: false }); await peer.join(code);
+  const originalWrite = sync.connection.write.bind(sync.connection);
+  let attempt = 0;
+  sync.connection.write = async (...args) => {
+    if (args[0].endsWith("state.niria")) {
+      if (attempt++ === 0) { other.addUser("另一端并发新增"); await peer.sync(); }
+      else store.addUser("上传期间本机新增");
+    }
+    return originalWrite(...args);
+  };
+  const plan = sync.rotation.prepare();
+  await activate(sync, plan);
+  assert.equal(attempt, 2);
+  assert.deepEqual(store.state.messages.map((m) => m.content).sort(), ["上传期间本机新增", "另一端并发新增"].sort());
+  sync.connection.write = originalWrite;
+  await sync.sync();
+  peer.unlock(plan.code); await peer.sync();
+  assert.equal(other.state.messages.length, 2);
+});
+test("known failure before writing preserves the old key and allows preparation to be canceled", async (t) => {
+  const { sync, dav, code } = await setup(t);
+  const plan = sync.rotation.prepare();
+  await assert.rejects(activate(sync, plan), /没有远端/);
+  assert.equal(sync.status().rotation.pending, false);
+  assert.equal(sync.exportPair().code, code);
+  sync.rotation.cancel();
+  assert.equal(dav.objects.size, 0);
+});
+test("unknown successful PUT pauses upload, persists no keys, and read-only recovery adopts the new key", async (t) => {
+  const { sync, dav, store } = await setup(t);
+  await sync.sync();
+  const plan = sync.rotation.prepare();
+  const originalWrite = sync.connection.write.bind(sync.connection);
+  sync.connection.write = async (...args) => { await originalWrite(...args); throw new Error(plan.code); };
+  await assert.rejects(activate(sync, plan), /尚未确认/);
+  assert.equal(sync.status().rotation.pending, true);
+  assert.equal(sync.status().auto, false);
+  assert.ok(!JSON.stringify(sync.meta).includes(parsePairing(plan.code).key.toString("base64url")));
+  assert.ok(!JSON.stringify(store.exportData()).includes(plan.code));
+  await assert.rejects(sync.sync(), /核对/);
+  assert.throws(() => sync.rotation.cancel(), /核对/);
+  store.addUser("换钥中断后的本机消息");
+  const before = dav.calls.length;
+  const result = await sync.rotation.recover(plan.code);
+  assert.equal(result.keyChanged, true); assert.equal(result.readOnly, true);
+  assert.ok(dav.calls.slice(before).every((c) => c.method === "GET"));
+  assert.equal(store.state.messages[0].content, "换钥中断后的本机消息");
+  sync.connection.write = originalWrite;
+  await sync.sync();
+});
+test("unknown failed PUT keeps the journal until the original key verifies the current remote object", async (t) => {
+  const { sync, dav, code } = await setup(t);
+  await sync.sync();
+  const plan = sync.rotation.prepare();
+  const originalWrite = sync.connection.write.bind(sync.connection);
+  sync.connection.write = async () => { throw new Error("network"); };
+  await assert.rejects(activate(sync, plan), /尚未确认/);
+  await assert.rejects(sync.rotation.recover(plan.code), /解密/);
+  assert.equal(sync.status().rotation.pending, true);
+  assert.throws(() => sync.configure({ baseUrl: "http://localhost:1/different/", auto: false }), /文件夹/);
+  const before = dav.calls.length;
+  const result = await sync.rotation.recover(code);
+  assert.equal(result.keyChanged, false);
+  assert.equal(result.rotation.pending, false);
+  assert.ok(dav.calls.slice(before).every((c) => c.method === "GET"));
+  assert.equal(sync.exportPair().code, code);
+  sync.connection.write = originalWrite;
+});
+test("pending rotation survives an actual database reopen and resolves using the externally saved code", async (t) => {
+  const folder = mkdtempSync(join(tmpdir(), "niria-key-recovery-"));
+  const dav = await davFixture();
+  const file = join(folder, "companion.sqlite");
+  let store = new CompanionStore(file), sync = new SyncService(store);
+  t.after(async () => {
+    sync.lock();
+    store.close();
+    await dav.close();
+    assert.ok(resolve(folder).startsWith(`${resolve(tmpdir())}${sep}`));
+    rmSync(folder, { recursive: true, force: true });
+  });
+  sync.configure({ baseUrl: dav.baseUrl, auto: true }); sync.createPair(); await sync.sync();
+  const plan = sync.rotation.prepare();
+  const write = sync.connection.write.bind(sync.connection);
+  sync.connection.write = async (...args) => { await write(...args); throw new Error("lost"); };
+  await assert.rejects(activate(sync, plan), /尚未确认/);
+  sync.lock(); store.close();
+  store = new CompanionStore(file); sync = new SyncService(store);
+  sync.configure({ baseUrl: dav.baseUrl, auto: true });
+  assert.equal(sync.status().auto, false);
+  assert.equal(await sync.tick(), false);
+  assert.equal(sync.status().rotation.pending, true);
+  const result = await sync.rotation.recover(plan.code);
+  assert.equal(result.keyChanged, true);
+  await sync.sync();
+});
+test("withdrawals and tombstones remain effective through key changes and peer recovery", async (t) => {
+  const { sync, code, dav, store } = await setup(t);
+  const message = store.addUser("不保留的经历");
+  const memory = store.addMemory({ content: "不保留", sources: [{ id: message.id, revision: 1 }] });
+  await sync.sync();
+  store.deleteMemory(memory, true);
+  const privateMessage = store.addUser("仅本机记录");
+  const privateMemory = store.addMemory({ content: "仅本机记录", sources: [{ id: privateMessage.id, revision: 1 }] });
+  store.editMemory(privateMemory, { allowSync: false });
+  const plan = sync.rotation.prepare(); await activate(sync, plan);
+  const key = parsePairing(plan.code);
+  const manifest = unseal(remoteObject(dav).data.toString(), key.key, key.vaultId, key.identityId);
+  assert.ok(!JSON.stringify(manifest).includes("仅本机"));
+  assert.ok(!JSON.stringify(manifest).includes("不保留"));
+  assert.ok(manifest.tombstones.some((item) => item.id === message.id));
+  assert.throws(() => sync.unlock(code), /停用/);
+});
+test("stopping after remote write retains recovery state; a second rotation cannot run concurrently", async (t) => {
+  const { sync, dav } = await setup(t);
+  await sync.sync();
+  const plan = sync.rotation.prepare();
+  const write = sync.connection.write.bind(sync.connection);
+  let reached, release;
+  const written = new Promise((resolve) => { reached = resolve; });
+  const continueUpload = new Promise((resolve) => { release = resolve; });
+  sync.connection.write = async (...args) => {
+    const result = await write(...args);
+    reached();
+    await continueUpload;
+    return result;
+  };
+  const running = activate(sync, plan);
+  await written;
+  await assert.rejects(activate(sync, plan), /变化|正在处理/);
+  sync.lock();
+  release();
+  await assert.rejects(running, /尚未确认/);
+  assert.equal(sync.status().rotation.pending, true);
+  sync.configure({ baseUrl: dav.baseUrl, auto: true });
+  assert.equal(sync.auto, false);
+  await sync.rotation.recover(plan.code);
+  assert.equal(sync.exportPair().code, plan.code);
+});
+test("failure applying a successful rotation leaves a recoverable journal rather than retrying encryption", async (t) => {
+  const { sync, store } = await setup(t);
+  await sync.sync();
+  const backup = store.exportData();
+  const plan = sync.rotation.prepare();
+  const commit = sync.commitManifest.bind(sync);
+  sync.commitManifest = () => { throw new Error("isolated local transaction failure"); };
+  await assert.rejects(activate(sync, plan), /尚未确认/);
+  assert.equal(sync.meta.rotation.toTag.length, 64);
+  assert.throws(() => store.restore(backup), /核对/);
+  sync.commitManifest = commit;
+  await sync.rotation.recover(plan.code);
+  await sync.sync();
+});
+test("rotation HTTP endpoints require the local token, validate explicit confirmation, and never expose keys in normal state", async (t) => {
+  const { sync, store, dav, code } = await setup(t);
+  await sync.sync();
+  const app = createPrototypeServer({ store, companion: new CompanionService(store), sync });
+  app.listen(0, "127.0.0.1"); await once(app, "listening");
+  t.after(() => new Promise((resolve) => { app.close(resolve); app.closeAllConnections(); }));
+  const base = `http://127.0.0.1:${app.address().port}`;
+  const { token } = await (await fetch(`${base}/api/session`)).json();
+  const post = (path, data, authenticated = true) => fetch(`${base}/api/sync/rotation/${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...(authenticated ? { "X-Niria-Token": token } : {}) }, body: JSON.stringify(data)
+  });
+  for (const path of ["prepare", "activate", "cancel", "recover"]) assert.equal((await post(path, {}, false)).status, 403);
+  const count = dav.calls.length;
+  const plan = await (await post("prepare", {})).json();
+  assert.equal(plan.previousCode, code);
+  const unconfirmed = await post("activate", { id: plan.id, confirmed: false, rememberPair: false });
+  assert.equal(unconfirmed.status, 400);
+  assert.equal(dav.calls.length, count);
+  const changed = await post("activate", { id: plan.id, confirmed: true, rememberPair: false });
+  assert.equal(changed.status, 200);
+  assert.ok(!JSON.stringify(await changed.json()).includes(plan.code));
+  const state = await (await fetch(`${base}/api/state`, { headers: { "X-Niria-Token": token } })).text();
+  assert.ok(!state.includes(code) && !state.includes(plan.code));
+  const key = parsePairing(plan.code);
+  assert.ok(!state.includes(key.key.toString("base64url")));
+  key.key.fill(0);
+});

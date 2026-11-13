@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>NIRIA 形象实验台</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="NIRIA 首页">NIRIA<span>形象实验台</span></a>
+      <div class="top-actions">
+        <span class="local-indicator"><span></span>本机预览</span>
+        <button id="settings-button" class="button quiet" type="button">生成服务</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="portrait-area" aria-label="伴侣形象预览">
+        <div class="stage-toolbar">
+          <div>
+            <h1>从一张图片，开始相处。</h1>
+            <p id="source-caption">导入清晰的二次元单人立绘，先看看她的样子。</p>
+          </div>
+          <label class="button quiet file-label">
+            更换图片
+            <input id="replace-image" type="file" accept="image/png,image/jpeg,image/webp">
+          </label>
+        </div>
+
+        <div class="portrait-stage" id="drop-zone">
+          <canvas id="portrait" width="1024" height="1536" aria-label="导入图片后的动作预览"></canvas>
+          <div class="empty-stage" id="empty-stage">
+            <div class="portrait-outline" aria-hidden="true">
+              <svg viewBox="0 0 180 210" fill="none">
+                <path d="M26 192V77C26 41.7 54.7 13 90 13S154 41.7 154 77V192" />
+                <circle cx="90" cy="80" r="24" />
+                <path d="M47 157c0-24 19-43 43-43s43 19 43 43" />
+                <path class="spark" d="M143 23v18m-9-9h18M30 104v12m-6-6h12" />
+              </svg>
+            </div>
+            <h2>先认识她的样子</h2>
+            <p>将一张图片拖到这里，或从电脑中选择。</p>
+            <label class="button primary file-label">
+              导入图片
+              <input id="source-image" type="file" accept="image/png,image/jpeg,image/webp">
+            </label>
+            <span class="file-hint">PNG、JPG 或 WebP，最大 8 MB</span>
+          </div>
+          <span class="preview-label" id="preview-label" hidden>原始形象</span>
+        </div>
+
+        <div class="playback-bar">
+          <button id="play-button" class="button playback" type="button" disabled aria-pressed="false">开始预览</button>
+          <label class="check"><input id="breathing" type="checkbox" checked>轻微呼吸</label>
+          <label class="check"><input id="blinking" type="checkbox" checked>自然眨眼</label>
+          <span class="playback-note" id="playback-note">导入后可预览轻微呼吸</span>
+        </div>
+        <p id="source-quality" class="quality-note" role="status" hidden></p>
+        <div class="background-tools"><button id="background-button" class="button quiet" type="button" disabled>预览透明背景</button><p class="field-hint">在本机处理与画面边缘连通的纯色背景，不调用图片服务。先比较，再采用。</p></div>
+      </section>
+
+      <aside class="inspector" aria-label="动作素材">
+        <section class="action-section">
+          <div class="section-heading"><h2>让表情自然一些</h2><span id="asset-count">0 / 4</span></div>
+          <p class="section-copy">每次生成一个动作。先对照原图，再决定是否采用。</p>
+          <div class="action-list" id="action-list">
+            <article class="action-item" data-action="blink">
+              <span class="action-symbol" aria-hidden="true">◡ ◡</span>
+              <div><h3>闭眼</h3><p>自然眨眼的目标画面</p><span class="asset-status">待生成</span></div>
+              <button class="button small generate-button" type="button" data-generate="blink" disabled>生成</button>
+              <button class="text-button view-button" type="button" data-view="blink" hidden>预览</button>
+            </article>
+            <article class="action-item" data-action="smile">
+              <span class="action-symbol" aria-hidden="true">⌣</span>
+              <div><h3>微笑</h3><p>温柔地回应你</p><span class="asset-status">待生成</span></div>
+              <button class="button small generate-button" type="button" data-generate="smile" disabled>生成</button>
+              <button class="text-button view-button" type="button" data-view="smile" hidden>预览</button>
+            </article>
+            <article class="action-item" data-action="curious">
+              <span class="action-symbol" aria-hidden="true">?</span>
+              <div><h3>疑惑</h3><p>认真听你说话</p><span class="asset-status">待生成</span></div>
+              <button class="button small generate-button" type="button" data-generate="curious" disabled>生成</button>
+              <button class="text-button view-button" type="button" data-view="curious" hidden>预览</button>
+            </article>
+            <article class="action-item" data-action="shy">
+              <span class="action-symbol" aria-hidden="true">〃</span>
+              <div><h3>害羞</h3><p>一点点含蓄的心情</p><span class="asset-status">待生成</span></div>
+              <button class="button small generate-button" type="button" data-generate="shy" disabled>生成</button>
+              <button class="text-button view-button" type="button" data-view="shy" hidden>预览</button>
+            </article>
+          </div>
+          <button class="text-button original-button" type="button" id="show-original" disabled>回到原始形象</button>
+        </section>
+
+        <section class="observation">
+          <span class="observation-mark" aria-hidden="true">✧</span>
+          <div><h2>确认外观保持一致</h2><p>留意脸型、发型和衣服是否保持一致。动作图发生偏移时，可以放弃并单独重做。</p></div>
+        </section>
+
+        <section class="requests-section">
+          <h2>本次调用</h2>
+          <p id="requests-empty" class="muted">尚未调用生成服务。</p>
+          <ol id="request-log" class="request-log" aria-label="本次生成调用记录"></ol>
+        </section>
+
+        <div class="export-area">
+          <button id="save-companion" class="button wide" type="button" hidden>保存到伴侣</button>
+          <button id="export-button" class="button wide" type="button" disabled>导出形象素材包</button>
+          <label class="text-button file-label">导入已有素材包<input id="import-package" type="file" accept=".json,application/json"></label>
+          <p>素材包包含图片与动作，不包含服务密钥。</p>
+        </div>
+      </aside>
+    </main>
+
+    <footer class="page-footer">
+      <span>NIRIA 图像原型</span><span>单张图片 / 动作素材 / 本地播放</span>
+    </footer>
+    <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form" class="dialog-body">
+        <div class="dialog-heading"><div><h2>连接生成服务</h2><p>使用你自己的图片编辑服务。</p></div><button type="button" class="close-button" data-close="settings-dialog" aria-label="关闭设置">×</button></div>
+        <label class="field">API 根地址<input id="base-url" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" required></label>
+        <label class="field">图片编辑模型<input id="model" type="text" placeholder="填写服务提供的模型名称" maxlength="150" autocomplete="off" required></label>
+        <label class="field">API 密钥<input id="api-key" type="password" placeholder="本机免密服务可以留空" maxlength="4096" autocomplete="off"></label>
+        <label class="check"><input id="image-reuse" type="checkbox">留空时继续使用当前密钥</label>
+        <label class="check"><input id="image-remember" type="checkbox" disabled>在此电脑安全记住图片配置</label>
+        <p class="field-hint">密钥只在本机服务中使用，不返回页面或写入素材包。记住配置仅在 Windows 桌面版提供，使用系统加密；默认仅本次进程使用。</p>
+        <div class="optional-settings">
+          <label class="check"><input id="high-fidelity" type="checkbox">高保真参考图编辑</label>
+          <label class="check"><input id="transparent" type="checkbox">生成透明背景</label>
+          <p class="field-hint">仅在服务明确支持时开启。原图与生成结果会通过本机实验台发送到你填写的服务。</p>
+        </div>
+        <div class="dialog-actions"><button type="button" class="button quiet" data-close="settings-dialog">取消</button><button class="button primary" type="submit">应用设置</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog">
+      <div class="dialog-body">
+        <div class="dialog-heading"><div><h2 id="confirm-title">生成动作素材</h2><p>本次只生成一个目标画面。</p></div><button type="button" class="close-button" data-close="confirm-dialog" aria-label="关闭生成确认">×</button></div>
+        <dl class="request-summary"><div><dt>动作</dt><dd id="confirm-action"></dd></div><div><dt>服务</dt><dd id="confirm-service"></dd></div><div><dt>预计请求</dt><dd>1 次图片编辑</dd></div></dl>
+        <p class="field-hint">将上传你的参考图，费用由生成服务收取。没有可靠价格时不估算金额；失败后不会自动重试。</p>
+        <div class="dialog-actions"><button type="button" class="button quiet" data-close="confirm-dialog">取消</button><button id="confirm-generate" type="button" class="button primary">确认生成 1 张</button></div>
+      </div>
+    </dialog>
+
+    <dialog id="background-dialog" class="review-dialog" aria-labelledby="background-title">
+      <div class="dialog-body">
+        <div class="dialog-heading"><div><h2 id="background-title">让形象融入桌面</h2><p>原始素材保留，随时可以恢复背景。</p></div><button type="button" class="close-button" data-close="background-dialog" aria-label="关闭背景预览">×</button></div>
+        <label class="field">比较素材<select id="background-frame" aria-label="选择背景预览素材"></select></label>
+        <div class="comparison"><figure><img id="background-before" alt="保留的原始素材"><figcaption>原始素材</figcaption></figure><figure><img id="background-after" alt="本机透明背景预览"><figcaption>透明背景预览</figcaption></figure></div>
+        <p class="field-hint" id="background-status" role="status"></p>
+        <ul id="background-report" class="background-report"></ul>
+        <p class="field-hint">适合边缘颜色一致的立绘。请逐张检查浅色衣服和头发；复杂场景、与背景相连的同色细节可能无法处理。</p>
+        <div class="dialog-actions"><button type="button" class="button quiet" data-close="background-dialog">保留原样</button><button id="background-accept" class="button primary" type="button" disabled>应用透明背景</button></div>
+      </div>
+    </dialog>
+    <dialog id="review-dialog" class="review-dialog">
+      <div class="dialog-body">
+        <div class="dialog-heading"><div><h2 id="review-title">检查动作素材</h2><p>确认外观与位置一致，再加入预览。</p></div><button type="button" class="close-button" data-close="review-dialog" aria-label="关闭素材预览">×</button></div>
+        <div class="comparison"><figure><img id="reference-preview" alt="原始参考图"><figcaption>原始形象</figcaption></figure><figure><img id="generated-preview" alt="生成的动作目标"><figcaption id="result-caption">生成结果</figcaption></figure></div>
+        <p class="field-hint" id="review-hint">重点查看脸型、发型、服装、人物比例与位置。</p>
+        <div class="review-options"><label class="check"><input id="align-result" type="checkbox" disabled>采用本机对齐的位置</label><label class="check"><input id="overlay-result" type="checkbox">叠加原图对照</label></div>
+        <p class="field-hint" id="alignment-note" role="status"></p>
+        <div class="dialog-actions"><button type="button" id="discard-result" class="button quiet">暂不采用</button><button type="button" id="accept-result" class="button primary">采用这个动作</button></div>
+      </div>
+    </dialog>
+  </body>
+</html>
