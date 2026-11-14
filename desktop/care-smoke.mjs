@@ -60,7 +60,7 @@ export async function verifyCare({ store, companion, evaluate, capture }) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     result.careTypingAbortsPending = pending[0].signal.aborted;
     pending[0].resolve("隔离关心：迟到问候不得显示");
-    await assert.rejects(interrupted, /主动关心/);
+    await assert.rejects(interrupted, (error) => error.status === 504);
     await wait("!document.querySelector('#send-message').disabled");
     result.careLateReplyDiscarded = !store.state.messages.some((message) => message.content.includes("迟到问候")) &&
       !(await evaluate("document.querySelector('#messages').textContent.includes('迟到问候')"));

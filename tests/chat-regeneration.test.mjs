@@ -74,7 +74,7 @@ for (const reason of ["cancel", "timeout"]) test(`${reason} retains the original
   if (reason === "cancel") service.cancel();
   else if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
   waiting.resolve("不应提交的迟到回复");
-  await assert.rejects(pending, /来源已经改变/);
+  await assert.rejects(pending, /已停止或超时/);
   preserved(f);
   assert.equal(store.state.messages.at(-1).status, "cancelled");
   assert.equal(store.state.messages.some((item) => item.content === "不应提交的迟到回复"), false);

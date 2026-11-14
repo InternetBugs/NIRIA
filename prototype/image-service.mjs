@@ -100,11 +100,18 @@ export function validateImageConnection(input) {
   return { baseUrl: input.baseUrl, model, apiKey, highFidelity: input.highFidelity === true, transparent: input.transparent === true };
 }
 
-export async function generateAction(input, { fetchImpl = fetch, signal } = {}) {
+export function validateImageRequest(input) {
   if (!input || typeof input !== "object") throw new ServiceError(400, "请求内容无效。");
-  const action = Object.hasOwn(ACTIONS, input.action) ? ACTIONS[input.action] : null;
-  if (!action) throw new ServiceError(400, "请选择一个支持的动作。");
-  const { model, apiKey } = validateImageConnection(input);
+  if (!Object.hasOwn(ACTIONS, input.action)) throw new ServiceError(400, "请选择一个支持的动作。");
+  const connection = validateImageConnection(input);
+  pngBytes(input.image);
+  return { ...connection, action: input.action, image: input.image };
+}
+
+export async function generateAction(input, { fetchImpl = fetch, signal } = {}) {
+  input = validateImageRequest(input);
+  const action = ACTIONS[input.action];
+  const { model, apiKey } = input;
   const endpoint = imageEndpoint(input.baseUrl);
   const bytes = pngBytes(input.image);
   const form = new FormData();

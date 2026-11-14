@@ -59,8 +59,8 @@
         <div class="memory-pagination"><button id="memory-newer" class="button quiet" disabled>更新一页</button><button id="memory-latest" class="text-button">回到最近</button><button id="memory-older" class="button quiet" disabled>更早一页</button></div>
       </section>
     </div>
-    <div id="speech-player" class="speech-player" hidden><span>合成声音 · 由你选择的朗读服务生成</span><audio id="speech-audio" controls></audio><button id="speech-stop" class="text-button">停止朗读</button></div>
-    <footer class="app-footer"><span>NIRIA <small>0.20 · 本地预览</small></span><span>一位伴侣，一起积累的生活。</span></footer>
+    <div id="speech-player" class="speech-player" hidden><span id="speech-status" role="status">合成声音 · 由你选择的朗读服务生成</span><audio id="speech-audio" controls hidden></audio><button id="speech-stop" class="text-button">停止朗读</button></div>
+    <footer class="app-footer"><span>NIRIA <small>0.31 · 本地预览</small></span><span>一位伴侣，一起积累的生活。</span></footer>
   </main>
   <p id="notice" class="notice" role="status" hidden></p>
 
@@ -153,6 +153,7 @@
       <button id="sync-remember-pair" class="text-button">应用配对码保存选项</button>
       <p class="hint">加入并恢复仅允许在空白设备进行，已有资料不会被静默替换。配对码不包含 WebDAV 密码，新设备需要自行配置连接。丢失所有设备和配对码后无法解密服务端资料。</p>
       <div class="dialog-actions"><button id="sync-probe" class="button quiet">检查服务能力</button><button id="sync-run" class="button primary">立即同步</button><button id="sync-stop" class="button quiet">停止</button><button id="sync-lock" class="button quiet">锁定并断开</button></div>
+      <p class="hint">停止会中止本次任务；已经发出的上传可能仍在服务器完成，下次同步会重新核对。锁定会停止任务并清除本次会话的连接与解密密钥；已保存配对码的清除若失败，会另行提示。</p>
       <div class="sync-divider"></div>
       <h3>更换同步密钥</h3>
       <p class="copy">配对码由所有设备共享。更换后，其他设备都需输入新码。若设备丢失，请同时在 WebDAV 服务端撤销它的登录凭据。旧设备已经保存的资料及服务端历史副本无法通过换钥删除。</p>
@@ -176,8 +177,11 @@
       <h3>加密保留共同记忆</h3><p class="copy">备份包含伴侣身份、聊天、记忆、遗忘标记与已保存形象，不包含服务密钥。用同一个口令在另一台电脑恢复。</p>
       <label class="field">备份 / 恢复口令<input id="backup-password" type="password" minlength="10" maxlength="256" autocomplete="off" placeholder="至少 10 个字符，请单独妥善保管"></label>
       <div class="backup-actions"><button id="export-backup" class="button primary">导出加密备份</button><label class="button quiet image-upload">选择备份恢复<input id="restore-backup" type="file" accept=".niria,application/json"></label></div>
-      <p class="hint">恢复会替换本机资料。本机已有的删除标记会继续生效；新电脑仍需重新配置服务。当前本机数据库为普通 SQLite 文件，只有导出备份经过加密。</p>
+      <p id="backup-status" class="hint" role="status" aria-busy="false"></p>
+      <button id="backup-stop" class="button quiet" hidden>停止备份操作</button>
+      <p class="hint">恢复会替换确认时的本机资料；读取或解密期间资料改变时，请重新选择并确认。本机已有的删除标记继续生效，新电脑仍需重新配置服务。保存前可停止，已提交的恢复无法撤销。当前本机数据库为普通 SQLite 文件，只有导出备份经过加密。</p>
       <h3 class="calls-heading">最近的服务调用</h3><div id="calls-list" class="calls-list"></div>
+      <p class="hint">图片“已返回”不代表已采用或质量合格；失败、停止或结果未知也可能计费，请核对服务端记录。这些调用记录只保留在此电脑，不进入伴侣备份或同步。</p>
       <h3 class="calls-heading">此设备保存的服务配置</h3>
       <p id="credential-status" class="hint"></p>
       <button id="forget-credentials" class="button quiet">清除本机保存配置</button>

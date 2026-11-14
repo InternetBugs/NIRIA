@@ -139,17 +139,21 @@ export class SQLiteState {
     }
   }
   write(state, before) {
-    const changes = { messages: false, memories: false };
+    const changes = { changed: false, messages: false, memories: false, avatar: false };
     const metadata = meta(state);
     if (!before || !isDeepStrictEqual(metadata, meta(before))) {
+      changes.changed = true;
       this.statement("INSERT INTO state_meta(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(serialize(metadata));
     }
     if (!before || !isDeepStrictEqual(state.avatar ?? null, before.avatar ?? null)) {
+      changes.changed = true;
+      changes.avatar = true;
       this.statement("INSERT INTO avatar_state(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(serialize(state.avatar ?? null));
     }
     for (const [name, table] of Object.entries(lists)) {
       const previous = rows(name, before?.[name] || []), next = rows(name, state[name]);
       for (const [id] of previous) if (!next.has(id)) {
+        changes.changed = true;
         this.statement(`DELETE FROM ${table} WHERE id=?`).run(id);
         if (name === "messages") changes.messages = true;
         if (name === "memories") { changes.memories = true; this.statement("DELETE FROM memory_sources WHERE memory_id=?").run(id); }
@@ -157,6 +161,7 @@ export class SQLiteState {
       for (const [id, row] of next) {
         const prior = previous.get(id);
         if (prior?.position === row.position && isDeepStrictEqual(prior.value, row.value)) continue;
+        changes.changed = true;
         if (name === "messages") changes.messages = true;
         if (name === "memories") changes.memories = true;
         const item = row.value, values = [id, row.position, serialize(row.value)];

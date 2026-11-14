@@ -63,10 +63,31 @@ export async function verifyLayout({ phase, layout, mainWindow, widget, showWidg
     await settle();
     layout.captureMain();
     result.maximizedSaved = mainWindow.isMaximized() && layout.preferences.state.main.maximized;
+    let maximizeTransitions = 0;
+    const countTransition = () => { maximizeTransitions++; };
+    mainWindow.on("unmaximize", countTransition);
+    mainWindow.on("maximize", countTransition);
+    const widgetFlags = { ...layout.state() };
+    try {
+      widget.setPosition(30000, 30000);
+      layout.powerMonitor.emit("resume");
+      await settle();
+      await settle();
+      result.resumeKeepsMaximizedWithoutToggle = mainWindow.isMaximized() && maximizeTransitions === 0 &&
+        layout.preferences.state.main.maximized;
+      result.resumeRecoversHiddenWidget = contained(widget.getBounds(), layout.areas()) &&
+        !widget.isVisible() && !layout.state().visible;
+      result.resumeKeepsWidgetFlags = widgetFlags.collapsed === layout.state().collapsed &&
+        widgetFlags.alwaysOnTop === layout.state().alwaysOnTop && widget.isAlwaysOnTop() === widgetFlags.alwaysOnTop;
+    } finally {
+      mainWindow.removeListener("unmaximize", countTransition);
+      mainWindow.removeListener("maximize", countTransition);
+    }
     result.saved = layout.preferences.flush();
     result.ok = result.visibleRestored && result.mainRestored && result.widgetRestored && result.flagsRestored &&
       result.minimizedIgnored && result.mainRestores && result.widgetPreservesFocus &&
-      result.offscreenRecovered && result.foundOnCursorDisplay && result.closeHides && result.maximizedSaved && result.saved;
+      result.offscreenRecovered && result.foundOnCursorDisplay && result.closeHides && result.maximizedSaved &&
+      result.resumeKeepsMaximizedWithoutToggle && result.resumeRecoversHiddenWidget && result.resumeKeepsWidgetFlags && result.saved;
   } else if (phase === "layout-hidden") {
     result.hiddenRestored = !widget && !layout.state().visible;
     result.flagsRestored = !layout.state().collapsed && layout.state().alwaysOnTop;

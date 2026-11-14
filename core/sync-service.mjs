@@ -1,5 +1,5 @@
 import { randomUUID, randomBytes } from "node:crypto";
-import { WebDAV } from "./webdav.mjs";
+import { WebDAV, checkSync, syncStopped } from "./webdav.mjs";
 import { emptyManifest, observe, mergeManifest, validateManifest, materialize, project, hash, recordKey, seal, unseal } from "./sync-model.mjs";
 import { now, defaults } from "./store.mjs";
 import { ServiceError } from "../prototype/image-service.mjs";
@@ -7,6 +7,7 @@ import { pairingCode, parsePairing, keyTag, keyMeta } from "./sync-pairing.mjs";
 import { SyncKeyRotation } from "./sync-rotation.mjs";
 import { stateDeletionRecords } from "./deletion-cascade.mjs";
 import { SyncStorage } from "./sync-storage.mjs";
+import { clearMemoryRecallIndex } from "./memory-recall-index.mjs";
 export { pairingCode, parsePairing } from "./sync-pairing.mjs";
 
 const uuid = (s) => typeof s === "string" && /^[a-f0-9-]{36}$/.test(s);
@@ -85,10 +86,10 @@ export class SyncService {
         };
         try { this.persist(); }
         catch (error) { this.meta = previous; throw error; }
-        this.lock();
         return () => { this.meta = previous; };
       };
     };
+    store.afterRestore = () => this.lock();
     store.listeners.add(() => {
       if (this.applying || !this.meta.vaultId || this.meta.manifest.identityId !== store.state.identity.id) return;
       const previous = { ...this.meta, fingerprints: { ...this.meta.fingerprints } };
@@ -107,6 +108,7 @@ export class SyncService {
     const previous = this.store.snapshot();
     const previousMessageVersion = this.store.messageVersion;
     const previousMemoryVersion = this.store.memoryVersion;
+    const previousStateVersion = this.store.stateVersion;
     this.store.db.exec("BEGIN IMMEDIATE");
     this.applying = true;
     try {
@@ -116,9 +118,12 @@ export class SyncService {
       this.meta = meta;
     } catch (error) {
       this.store.db.exec("ROLLBACK");
+      clearMemoryRecallIndex(this.store.state.memories);
       this.store.state = previous;
+      this.store.recallMemoryArray = previous.memories;
       this.store.messageVersion = previousMessageVersion;
       this.store.memoryVersion = previousMemoryVersion;
+      this.store.stateVersion = previousStateVersion;
       throw error;
     } finally { this.applying = false; }
   }
@@ -131,14 +136,18 @@ export class SyncService {
       conflicts: this.store.state.conflicts || []
     };
   }
-  configure(input) {
+  prepareConfiguration(input) {
     if (this.active) throw new ServiceError(409, "同步正在执行，请先停止后再更换连接。");
     const connection = new WebDAV(input, { fetchImpl: this.fetchImpl });
     if (typeof input.auto !== "boolean") throw new ServiceError(400, "同步开关无效。");
     this.rotation.assertTarget(connection);
+    return { connection, auto: this.meta.rotation ? false : input.auto };
+  }
+  configure(input) {
+    const { connection, auto } = this.prepareConfiguration(input);
     this.rotation.discard();
     this.connection = connection;
-    this.auto = this.meta.rotation ? false : input.auto;
+    this.auto = auto;
     this.capabilities = null;
     this.lastError = null;
     return this.status();
@@ -168,11 +177,16 @@ export class SyncService {
     if (next.identityId !== this.store.state.identity.id) { next.key.fill(0); throw new ServiceError(409, "配对码属于另一位伴侣。请在空白新设备使用“加入并恢复”。"); }
     if (this.meta.vaultId && this.meta.vaultId !== next.vaultId) { next.key.fill(0); throw new ServiceError(409, "配对码与本机记录的同步空间不一致。"); }
     if (this.meta.retiredKeyTags?.includes(keyTag(next))) { next.key.fill(0); throw new ServiceError(409, "这个配对码已在本机停用，请使用换钥后的新配对码。"); }
+    const meta = { ...this.meta, vaultId: next.vaultId };
+    try { this.persistence.save(meta); }
+    catch {
+      next.key.fill(0);
+      throw new ServiceError(503, "本机未能保存同步解锁信息，原有配对状态已保留，请检查本机存储后再试。");
+    }
     this.rotation.discard();
     this.pair?.key.fill(0);
+    this.meta = meta;
     this.pair = next;
-    this.meta.vaultId = next.vaultId;
-    this.persist();
     return this.status();
   }
   exportPair() {
@@ -197,11 +211,15 @@ export class SyncService {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const result = await fn(controller.signal);
+      checkSync(controller.signal);
       this.lastError = null;
       return result;
     } catch (error) {
-      this.lastError = error instanceof ServiceError ? error.message : "同步未完成，本机资料已保留。";
-      throw error instanceof ServiceError ? error : new ServiceError(502, this.lastError);
+      const failure = error instanceof ServiceError ? error :
+        controller.signal.aborted || ["AbortError", "TimeoutError"].includes(error?.name)
+          ? syncStopped() : new ServiceError(502, "同步未完成，本机资料已保留。");
+      this.lastError = failure.message;
+      throw failure;
     } finally { clearTimeout(timer); this.active = null; }
   }
   requirePair() {
@@ -211,8 +229,11 @@ export class SyncService {
   folder(pair = this.pair) { return `niria-${pair.vaultId}/`; }
   async probe() {
     this.requirePair();
+    const connection = this.connection, folder = this.folder();
     return this.exclusive(async (signal) => {
-      this.capabilities = await this.connection.probe(this.folder(), signal);
+      const capabilities = await connection.probe(folder, signal);
+      checkSync(signal);
+      this.capabilities = capabilities;
       return this.capabilities;
     });
   }
@@ -221,10 +242,15 @@ export class SyncService {
     this.rotation.assertCanSync();
     const pair = this.pair, connection = this.connection;
     return this.exclusive(async (signal) => {
-      if (!this.capabilities) this.capabilities = await connection.probe(this.folder(pair), signal);
+      if (!this.capabilities) {
+        const capabilities = await connection.probe(this.folder(pair), signal);
+        checkSync(signal);
+        this.capabilities = capabilities;
+      }
       for (let attempt = 0; attempt < 4; attempt++) {
-        if (signal.aborted) throw new ServiceError(504, "同步已停止。");
+        checkSync(signal);
         const remote = await connection.read(`${this.folder(pair)}state.niria`, signal);
+        checkSync(signal);
         if (!remote && this.meta.keyTag && keyTag(pair) !== this.meta.keyTag) {
           throw new ServiceError(409, "远端资料不存在，无法验证新配对码；未上传或改写同步空间。");
         }
@@ -269,9 +295,10 @@ export class SyncService {
     try {
       return await this.exclusive(async (signal) => {
         const remote = await connection.read(`${this.folder(pair)}state.niria`, signal);
+        checkSync(signal);
         if (!remote) throw new ServiceError(404, "这个同步空间还没有资料，请先在原设备成功同步一次。");
         const manifest = unseal(remote.data.toString("utf8"), pair.key, pair.vaultId, pair.identityId);
-        if (signal.aborted || this.store.state.messages.length || this.store.state.memories.length ||
+        if (this.store.state.messages.length || this.store.state.memories.length ||
             this.store.state.avatar || this.store.state.identity.revision !== 1) throw new ServiceError(409, "本机资料已经改变，未替换伴侣。");
         const empty = defaults();
         empty.settings = this.store.snapshot().settings;

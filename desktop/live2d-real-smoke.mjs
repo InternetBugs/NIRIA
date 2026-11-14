@@ -63,9 +63,20 @@ export async function verifyRealLive2D({ store, evaluate, bundle, capture, reloa
     await wait("!document.querySelector('#live2d-adopt').disabled");
     const first = await evaluate(fingerprint("#live2d-preview-canvas"));
     result.realOfficialCoreDrawsVisibleTransparentFrame = first.opaque > 1000 && first.transparent > 1000;
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    const later = await evaluate(fingerprint("#live2d-preview-canvas"));
-    result.realIdleMotionChangesPixels = later.hash !== first.hash;
+    // Hidden native smoke windows can receive animation frames less often than
+    // the old fixed 700 ms delay. Require an actual changed frame, with a bound.
+    result.realIdleMotionChangesPixels = false;
+    for (let index = 0; index < 60; index++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const later = await evaluate(fingerprint("#live2d-preview-canvas"));
+      if (later.hash !== first.hash) { result.realIdleMotionChangesPixels = true; break; }
+    }
+    if (!result.realIdleMotionChangesPixels) {
+      const state = await evaluate(`({hidden:document.hidden,visibility:document.visibilityState,
+        reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,
+        error:document.querySelector('#live2d-preview-canvas').dataset.live2dError||null})`);
+      throw new Error(`Real idle motion produced no changed frame within 6 seconds: ${JSON.stringify(state)}`);
+    }
     await evaluate("document.querySelector('#live2d-preview-expression').value='smile'; document.querySelector('#live2d-preview-expression').dispatchEvent(new Event('change'))");
     await wait("document.querySelector('#live2d-preview-canvas').dataset.expression === 'smile'");
     result.realExpressionMappingApplied = true;

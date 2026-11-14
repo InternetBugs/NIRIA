@@ -22,11 +22,25 @@ import { verifyCare } from "../desktop/care-smoke.mjs";
 import { verifyLive2D } from "../desktop/live2d-smoke.mjs";
 import { readRealLive2D, verifyRealLive2D } from "../desktop/live2d-real-smoke.mjs";
 import { verifyAnimeFace } from "../desktop/animeface-smoke.mjs";
+import { verifyAvatarSafety } from "../desktop/avatar-safety-smoke.mjs";
+import { verifyImageGeneration } from "../desktop/image-generation-smoke.mjs";
+import { verifySpeechSafety } from "../desktop/speech-safety-smoke.mjs";
+import { verifyChatFaults } from "../desktop/chat-fault-smoke.mjs";
+import { verifySyncSafety } from "../desktop/sync-safety-smoke.mjs";
+import { verifyBackupSafety } from "../desktop/backup-safety-smoke.mjs";
+import { verifyCredentialSafety } from "../desktop/credential-safety-smoke.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const realLive2D = process.argv.includes("--live2d-real");
 const faceMode = process.argv.includes("--faces");
-const companionMode = process.argv.includes("--companion") || realLive2D;
+const avatarSafetyMode = process.argv.includes("--avatar-safety");
+const imageCallsMode = process.argv.includes("--image-calls");
+const speechSafetyMode = process.argv.includes("--speech-safety");
+const chatFaultMode = process.argv.includes("--chat-faults");
+const syncSafetyMode = process.argv.includes("--sync-safety");
+const backupSafetyMode = process.argv.includes("--backup-safety");
+const credentialSafetyMode = process.argv.includes("--credential-safety");
+const companionMode = process.argv.includes("--companion") || realLive2D || avatarSafetyMode || imageCallsMode || speechSafetyMode || chatFaultMode || syncSafetyMode || backupSafetyMode || credentialSafetyMode;
 const output = path.join(root, "artifacts");
 await mkdir(output, { recursive: true });
 const downloads = path.join(output, `downloads-${Date.now()}`);
@@ -242,6 +256,54 @@ try {
       examples.push({ name: example.name, count: example.expected.length, url });
     }
     const checks = await verifyAnimeFace({ evaluate, examples });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (credentialSafetyMode) {
+    const checks = await verifyCredentialSafety({ evaluate,
+      navigate: (path) => call("Page.navigate", { url: new URL(path, appUrl).href }) });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    assert.equal(speechCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (backupSafetyMode) {
+    const checks = await verifyBackupSafety({ evaluate,
+      navigate: (path) => call("Page.navigate", { url: new URL(path, appUrl).href }) });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    assert.equal(speechCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (syncSafetyMode) {
+    const checks = await verifySyncSafety({ store, sync: app.connections.services.sync, connections: app.connections,
+      evaluate, navigate: (path) => call("Page.navigate", { url: `${appUrl}${path}` }), davBaseUrl: dav.baseUrl });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (chatFaultMode) {
+    await until("document.querySelector('#calls-list')?.children.length > 0");
+    const checks = await verifyChatFaults({ store, companion, evaluate,
+      navigate: (path) => call("Page.navigate", { url: `${appUrl}${path}` }) });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, syntheticCompletions: 7, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (speechSafetyMode) {
+    await until("document.querySelector('#calls-list')?.children.length > 0");
+    const checks = await verifySpeechSafety({ store, evaluate,
+      navigate: (path) => call("Page.navigate", { url: `${appUrl}${path}` }),
+      capture: () => screenshot("speech-waiting-browser.png") });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    assert.equal(speechCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, localSpeechRequests: 6, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (imageCallsMode) {
+    await until("!!document.querySelector('#open-live2d') && document.querySelector('#connection-status')?.textContent.includes('配置')");
+    const checks = await verifyImageGeneration({ store, evaluate, navigate: (path) => call("Page.navigate", { url: `${appUrl}${path}` }) });
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(providerCalls, 0);
+    console.log(JSON.stringify({ passed: true, checks, localImageRequests: 3, providerCalls, errors: cdp.errors }, null, 2));
+  } else if (avatarSafetyMode) {
+    await until("!!document.querySelector('#open-live2d') && document.querySelector('#connection-status')?.textContent.includes('配置')");
+    const checks = await verifyAvatarSafety({ store, evaluate, navigate: (path) => call("Page.navigate", { url: `${appUrl}${path}` }) });
     assert.deepEqual(cdp.errors, []);
     assert.equal(providerCalls, 0);
     console.log(JSON.stringify({ passed: true, checks, providerCalls, errors: cdp.errors }, null, 2));
@@ -524,7 +586,7 @@ try {
     await evaluate("document.querySelector('[data-view=\"memories\"]').click()");
     await until("document.querySelectorAll('.memory-card').length === 1");
     await evaluate("[...document.querySelectorAll('.memory-card button')].find(b => b.textContent === '确认').click()");
-    await until("document.querySelector('.memory-card .tag').textContent === '已确认'");
+    await until("document.querySelector('.memory-card .tag')?.textContent === '已确认'");
     await screenshot("companion-memories.png");
     await evaluate(`(() => {
       document.querySelector('#open-settings').click();
@@ -538,7 +600,7 @@ try {
     await until("!document.querySelector('#settings-dialog').open");
     assert.equal(speechCalls, 0);
     await evaluate("document.querySelector('[data-view=\"chat\"]').click(); [...document.querySelectorAll('.message.assistant button')].find(b => b.textContent.includes('朗读')).click()");
-    await until("!document.querySelector('#speech-player').hidden");
+    await until("!document.querySelector('#speech-player').hidden && document.querySelector('#speech-audio').src.startsWith('blob:')");
     assert.equal(speechCalls, 1);
     assert.equal(await evaluate("document.querySelector('#speech-audio').src.startsWith('blob:')"), true);
     await evaluate("document.querySelector('#speech-stop').click()");
@@ -711,7 +773,7 @@ try {
     await delay(300);
     await evaluate("window.__releaseAvatar()");
     await until("window.__avatarCompleted === 2 && !document.querySelector('#avatar-canvas').hidden && document.querySelector('#avatar-canvas').getContext('2d').getImageData(512, 700, 1, 1).data[1] > 140");
-    assert.equal(store.state.avatar.source, await evaluate("window.__avatarUploads[1].original"), "an older delayed save must not overwrite the newer import");
+    assert.equal(store.state.avatar.source, await evaluate("window.__avatarUploads[1].avatar.original"), "an older delayed save must not overwrite the newer import");
     await evaluate("window.fetch = window.__originalFetch; delete window.__originalFetch; delete window.__selectPicture; delete window.__releaseAvatar; delete window.__avatarUploads; delete window.__avatarCompleted");
     const fixture = await evaluate(`(() => {
       const frame = (color, left = 5) => {

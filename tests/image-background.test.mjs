@@ -167,10 +167,11 @@ test("avatar HTTP validates background mode atomically and exposes only local pr
   t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`, { token } = await (await fetch(`${base}/api/session`)).json();
   const headers = { "Content-Type": "application/json", "X-Niria-Token": token };
-  assert.equal((await fetch(`${base}/api/avatar`, { method: "POST", headers, body: JSON.stringify(avatar()) })).status, 200);
+  const payload = (value) => ({ avatar: value, identityId: store.state.identity.id, expectedAvatarKey: store.avatarKey });
+  assert.equal((await fetch(`${base}/api/avatar`, { method: "POST", headers, body: JSON.stringify(payload(avatar())) })).status, 200);
   const before = store.snapshot();
   assert.equal((await fetch(`${base}/api/avatar`, { method: "POST", headers,
-    body: JSON.stringify({ ...avatar(), background: { version: 9, mode: "edge-connected" } }) })).status, 400);
+    body: JSON.stringify(payload({ ...avatar(), background: { version: 9, mode: "edge-connected" } })) })).status, 400);
   assert.deepEqual(store.snapshot(), before);
   for (const route of ["/image-background.js", "/background-editor.js", "/image-worker.js"]) {
     assert.equal((await fetch(`${base}${route}`)).status, 200);

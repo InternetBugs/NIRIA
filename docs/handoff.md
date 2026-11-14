@@ -1,5 +1,73 @@
 # NIRIA 停工交接
 
+## 2026 年 11 月 14 日源码 0.31.0：历史引用保护
+
+当前源码为 **0.31.0**，最近实际安装验收的包仍是 **0.30.0**，不含本轮修复。先用本机 Magpie 另一条 `auto/gpt-5.6-sol` 路由实际回忆两条已有记忆，预览与实际引用、身份和记忆摘要一致。接着在该真实回复上复现缺口：记忆撤权、纠正或遗忘后，较晚助手回复仍可能引用旧事实并进入后续请求。
+
+已沿显式记忆引用、来源与回复关系补齐排除和衍生停用。模型与同步权限独立；同一原消息中其他直接整理的事实继续保留单条权限。新引用增加正文 `contentHash`，元数据修改不误停用正文未变的引用；旧引用保守核对原摘要/修订。数据库仍 v3，备份/同步仍 v1，所有参与设备需统一升级。模型上下文排除没有扩大用户已确认的物理删除清单。
+
+新增 **19 项**，最初 14 项在旧实现全部失败，证据为 `artifacts/memory-context-before-final.log`；源码全套 **410 项通过**、**139 文件语法通过**。修复后经 Magpie 两次实际请求验证纠正与撤权，连同换路由和前轮累计七次，均为合成资料且没有自动重试。证据为 `artifacts/magpie-chat-acceptance-1794668570091/model-switch.json`、`artifacts/magpie-memory-context-0.31/correction.json` 和 `permission.json`。
+
+完整自动浏览器回归在 Edge `Runtime.enable` 超时；请求沙箱外重跑被自动审批拒绝，未执行。已连接的 Magpie 浏览器先完成纯内存合成资料的发送范围检查，旧偏好被排除、独立书店事实保留；随后复用六个未修改的共享检查器，画布、记忆浏览、发送范围/草稿、重生成、主动关心及 Live2D 导入共 **91 项结果通过**。结果为 `artifacts/connected-browser-0.31-1794671814581/result.json`，同目录保存工具观察、清理结果及受测时原源码汇总；没有增加真实网关请求。自建标签及临时服务均已结束。
+
+2026 年 11 月 15 日再以独立 Node 进程检查保留的真实 0.7.0/0.14.0 旧库，核心迁移、旧加密备份恢复、真实旧代码拒绝新库和再次重开共六阶段通过，完整状态、同步元数据、权限及删除均保留，原始输入哈希不变，见 `artifacts/legacy-storage-0.31-mMPkSP/result.json`。没有重建旧夹具或启动 Electron。
+
+六组界面检查没有覆盖窄屏、原生下载等完整浏览器流程，核心迁移检查也不能代替 Electron 中的旧库显示、窗口及安装验收。0.31.0 尚未打包；下一步需在允许的环境完成这些检查，之后再构建和实际验收新包。源码汇总 `artifacts/source-0.31.json`；没有提交、推送或发布。真实立绘与付费图片继续后移，首版其他真实服务、设备与发行许可待办仍保留。
+
+## 2026 年 11 月 14 日本机 Magpie 对话检查
+
+用户提出使用本机 Magpie。运行中网关为 0.1.4174，对话根地址 `http://127.0.0.1:3425/v1`，本次未提供额外 API 密钥。生产适配器使用 `auto/gpt-6.1-sol` 共提交四次请求：连接、短聊天、两次整理。连接及中文聊天通过；标注“合成资料”的首次整理返回合法空数组，未达到测试预期，失败保留。普通事实陈述的新整理产生两条带来源修订和哈希的待确认记忆。
+
+确认后另一个 Node 进程重开隔离 SQLite，完整状态、身份和记忆一致；原消息移出最近上下文后，本地召回仍包含两条事实。本节与原四次请求汇总记录的是当时只配置、尚未调用 `auto/gpt-5.6-sol` 的阶段；后续真实换路由回复和修复后的检查见上方 0.31.0 节，不倒填原始结果。汇总 `artifacts/magpie-chat-acceptance-1794668570091/result.json`；独立连接记录 `artifacts/magpie-chat-smoke-1794668570091/result.json`。数据全部合成，这四次检查期间没有更改运行代码、重建安装包、提交或推送。没有验证上游模型身份、费用、朗读、图片或长期行为；真实立绘与付费图片继续后移。
+
+## 2026 年 11 月 14 日继续本地开发至 0.30.0
+
+当前源码及最近构建且实际安装验收的本机包均为 **0.30.0 开发预览**，位置为 `release/NIRIA Setup 0.30.0.exe`，目录版为 `release/win-unpacked/NIRIA.exe`。真实立绘和付费图片服务验收按用户选择后移，继续本地开发，首版目标不删除。
+
+本轮把完整排序全部记忆改为按优先堆取出所需候选。相关性和词频、确认/时间/ID 排序、同序 ID 的原位置、空正文、字数与权限规则保持原结果；长度计数让剩余预算放不下任何条目时直接结束。新增两项差分检查覆盖 2,048 个候选与条数/字数边界；定向 21 项、全套 **391 项测试**及 **138 文件语法检查**通过。完整浏览器与源码 Electron 回归、真实 0.7.0/0.14.0 旧库升级、降级阻止和重启通过，渲染错误为空。
+
+`npm run test:recall` 另保留 0.29.0 索引完整排序的参考。20,000 条消息、4,000 条有来源记忆的单次本机合成诊断中，25 个预热样本整体中位数为旧完整排序 12.45 ms、当前 7.79 ms；每次选取相符，分词次数仍为 4,001。个别查询仍可能更慢，冷启动顺序不可比，不代表所有查询、真实用户历史或端到端聊天。来源、候选及完整内存状态仍有全量处理。
+
+源码汇总为 `artifacts/source-0.30.json`；原始证据为 `artifacts/memory-ranking-targeted.log`、`artifacts/node-tests-memory-ranking.log`、`artifacts/check-memory-ranking.log`、`artifacts/companion-browser-memory-ranking.log`、`artifacts/desktop-memory-ranking.log`、`artifacts/recall-benchmark-1794665493494/result.json`。
+
+随后使用四个已校验缓存离线构建 0.30.0，121,635,651 字节，SHA-256 为 `EAB03174DF4821E3B675B80E91F794BA4E89D908A349911EFFBFC7BC92A47498`，旁附 `.sha256`；111 个运行文件与当前受测源码完全一致，归档总 112 文件且集合相同，安装器载荷与目录版相符。安装器及原生卸载器 CRC 通过；包内 Haru 双窗口、备份/本机 WebDAV 恢复和 SQLite 重启通过。按既有授权完成实际 0.14→0.30 覆盖、资料迁移、安装后完整桌面回归、卸载保留、重装恢复和最终卸载，全 11 阶段通过。已安装程序核对发送范围与实际记忆选取、权限/纠正/删除排除以及重生成，渲染错误为空。独立复核确认测试系统状态已清理，卸载期间隔离资料库哈希不变。
+
+包汇总为 `artifacts/release-0.30.json`，实际结果为 `artifacts/installer-smoke-ea747214030c457fb458a3f46257e592/result.json`，同目录 `installed-regression.log` 为完整回归；另见 `artifacts/installer-acceptance-0.30.log`、`artifacts/installer-postflight-0.30.json`、`artifacts/desktop-live2d-real-0.30.log`、`artifacts/package-audit-0.30.json`、`artifacts/installer-payload-0.30.json`。未提交、推送或发布；SDK 仅供本机验证，模型未打包，发行许可仍未取得。0.29.0 等历史包及其证据保留，各自只证明受测版本；该次包构建时未重跑无 SDK 隔离副本，后续更新见下文，外部服务或实体设备验收仍待执行。
+
+随后完成 0.30.0 无 SDK 隔离源码及独立依赖安装。先复现默认 npm 缓存缺包和 npm 12 拒绝 esbuild 跨仓库主机 tarball，再将锁文件 27 个镜像地址统一到 npm 官方仓库，版本、摘要和依赖关系不变。最终副本 `artifacts/public-source-0.30-OgGdGJ` 从既有摘要核验缓存以 `npm ci --offline` 新装 285 个包，不复用主工作区依赖；Electron 自身代码从校验缓存准备运行库，esbuild 实际转换通过。保留 npm 12 默认的两项脚本跳过策略；安装时拦截一次 npm 自身更新检查，没有外部下载。
+
+该副本 Node 测试 389 通过、2 项 SDK 专属检查跳过，136 文件语法通过，完整伴侣浏览器通过。首次桌面焦点保持检查失败，原样完整重跑 14 阶段通过，渲染错误为空；原失败证据保留。162 个源码文件中 146 个代码/配置文件与工作区核对哈希。汇总 `artifacts/public-source-0.30.json`、安装证据 `artifacts/public-source-0.30-install.json`、锁文件修正 `artifacts/lock-registry-normalization-0.30.json`，原始日志为 `artifacts/public-source-0.30-*.log`。源码和包汇总已更新，包在锁文件修正后重新核对相符且未重建，见 `artifacts/package-audit-0.30-after-lock.json`。空缓存在线安装、其他 Node/npm、从新依赖目录构建包和真实服务/实体设备未验证，首版待办继续保留。
+
+## 2026 年 11 月 14 日继续本地开发至 0.29.0
+
+用户选择将真实立绘和付费图片服务验收后移，继续本地开发；这不删除首版对应验收要求，也不代表真实质量和费用已经通过。当前源码及最近安装验收过的本机包均为 **0.29.0 开发预览**，位置为 `release/NIRIA Setup 0.29.0.exe`，目录版为 `release/win-unpacked/NIRIA.exe`。
+
+本轮修复显示器参数变化时无必要的还原/最大化切换、恢复事件重入和中间布局写入，接入系统唤醒后的延迟位置检查。隐藏小窗恢复位置但不显示或抢焦点；收起、置顶、最小化和全屏状态保留，恢复或退出全屏后再检查边界。新增 8 项窗口生命周期测试，旧实现 4 项失败，修复后全套 **389 项测试通过**、**138 文件语法检查通过**。真实 Electron 全套源码回归、0.7.0/0.14.0 旧库升级、降级阻止和重启通过；新增模拟唤醒事件在真实窗口上检查最大化无切换及隐藏小窗恢复，渲染错误为空。没有让系统实际休眠，也没有完成实体多屏长期验收。
+
+源码证据为 `artifacts/window-layout-before.log`、`artifacts/window-layout-targeted.log`、`artifacts/node-tests-window-recovery.log`、`artifacts/check-window-recovery.log`、`artifacts/desktop-window-recovery.log`，汇总为 `artifacts/source-0.29.json`。
+
+随后用四个已校验缓存离线构建 0.29.0，121,635,314 字节，SHA-256 为 `0E95BEE6593AE1EBC57EE68EA78E99AF403404A6B10F4D79D77F7D4B133B893C`，旁附 `.sha256`；111 个运行文件与源码完全一致，归档总 112 文件且集合相同，安装器载荷与目录版相符。原生卸载器及 CRC 校验通过，包内 Haru 双窗口、备份/本机 WebDAV 恢复和重启通过。按既有授权完成实际 0.14→0.29 覆盖、资料迁移、安装后完整回归、卸载保留、重装恢复和最终卸载，全 11 阶段通过。独立复核确认测试注册、进程、快捷方式、目录及哨兵清理完毕，资料库在两次卸载期间哈希不变。
+
+包汇总为 `artifacts/release-0.29.json`，实际结果为 `artifacts/installer-smoke-3cf03f91b8584fb0b8d1f22b27a404f7/result.json`，该目录下 `installed-regression.log` 为完整桌面回归；另见 `artifacts/installer-acceptance-0.29.log`、`artifacts/installer-postflight-0.29.json`、`artifacts/desktop-live2d-real-0.29.log`、`artifacts/package-audit-0.29.json` 和 `artifacts/installer-payload-0.29.json`。未提交、推送或发布；SDK 仅供本机验证，模型未打包，发行许可仍未取得。以下 0.28.0 包、安装验收和无 SDK 副本的证据属于各自受测版本，不能当成 0.29.0 包内验证；0.29.0 的无 SDK 隔离副本本轮未重跑。
+
+## 2026 年 11 月 14 日恢复开发至 0.28.0
+
+用户已明确要求“继续之前收工的地方接着写”。恢复开发先推进至 **0.28.0 开发预览**。该轮补齐凭据库损坏/不可用时的独立降级，以及配置安全保存成功后再切换连接，失败时保留原会话和待确认换钥信息。此前的检索索引、图片跨窗口采用保护、可取消动作预览、图片/朗读/聊天/同步的调用生命周期，以及备份导出/恢复的确认与取消继续保留。`npm test` 限定仓库测试；浏览器入口包含 `--avatar-safety`、`--image-calls`、`--speech-safety`、`--chat-faults`、`--sync-safety`、`--backup-safety`、`--credential-safety`，另有 `npm run test:recall`。权限/遗忘规则继续生效；索引和恢复标记不进入数据库，调用日志不进入备份或同步，存储版本仍为 3，备份/同步 envelope 仍为 v1。旧应用不能读取含新图片调用类型的本机数据库，使用前需升级。
+
+源码 `npm test` **381 项通过**，**137 文件语法检查通过**。新增 9 项凭据生命周期测试、14 项共用故障界面检查，以及 Electron 中实际损坏凭据文件的启动/重启，均通过；原坏文件逐字节保留，伴侣、历史和记忆不变。安装器修复另增 8 项 NSIS 完整性测试。最新 Node/语法证据为 `artifacts/node-tests-uninstaller-fixed.log`、`artifacts/check-uninstaller-fixed.log`。源码及包内完整回归、实际 0.7.0/0.14.0 旧库升级与重启通过，渲染错误为空，证据为 `artifacts/desktop-credential-safety.log`、`artifacts/desktop-packaged-0.28-verified.log`，汇总为 `artifacts/source-0.28.json`。真实 Haru 检查首次固定 700 毫秒采样失败，改为有界观察实际像素变化后，源码及重建包均通过，原失败和初次包证据保留。新恢复 HTTP 请求仍需当前 `backup.basis` 作为 `expectedBasis`；v1 备份文件不变。此前的故障检查均继续运行，未调用真实模型或 Nextcloud。
+
+最近本机包为 **0.28.0**，位置 `release/NIRIA Setup 0.28.0.exe`（121,634,875 字节），目录版 `release/win-unpacked/NIRIA.exe`。仅使用四个已校验的本机缓存离线构建，未下载工具；构建时运行原生 NSIS 辅助程序，在 `artifacts/` 中生成并保存卸载器，核对安装器与卸载器 CRC。111 个运行文件与当前源码逐字节一致、归档共 112 文件且集合相符，安装包内归档、可执行文件及运行时许可与受测目录版哈希一致；应用归档与此前真实 Haru 验收时相同。实际安装后完整桌面回归、覆盖迁移、卸载保留、重装恢复和最终清理通过。SDK 仅用于本机验证，Haru 模型未打包，没有签名、上传、发布、提交或推送；公开仓库中的原提交也不自动代表当前本机改动已上传。原 0.25.0/0.27.0 安装包保留为尚未实际安装验收的历史证据。
+
+当前 0.28.0 的无 SDK 隔离源码副本也已验证，共 161 文件，不含真实模型、用户资料、凭据、依赖和构建产物；145 个代码/配置文件核对哈希一致。Node 测试 379 通过、2 项官方 SDK 专属检查跳过，135 文件语法通过；完整伴侣浏览器及 Electron 14 阶段通过，渲染错误为空。汇总为 `artifacts/public-source-0.28.json`，原始日志为 `artifacts/public-source-0.28-*.log`，更新了此前仅属于 0.20.0 的无 SDK 证据。本次复用已有开发依赖，没有重新安装依赖，不包含真实 SDK、旧库升级或真实服务/实体双设备验收。
+
+重建可用 `node scripts/build-offline.mjs`，依赖当前固定构建器内部 API，缓存缺失或校验失败即停止；随后运行 `node scripts/verify-package.mjs`、`node scripts/verify-installer-payload.mjs` 及包内回归。最新证据为 `artifacts/release-0.28.json`，SHA-256 为 `4F9F9348A61B8FB5B7C0E0F3C0D94A420B01D742129089ED1EC0C604392121C6`，安装包旁附 `.sha256`。
+
+用户于 2026-11-14 明确授权继续实际安装验收。首次运行发现旧离线脚本直接提取的卸载器 CRC 不匹配，卸载退出码 2；原失败包与诊断保存在 `artifacts/installer-0.28-uninstaller-crc-failed/`、`artifacts/uninstaller-crc-0.28.json`。用同版本原生卸载器成功清理失败安装，数据库未变。修复后从 0.14.0 安装重新开始，全 11 阶段通过，结果为 `artifacts/installer-smoke-5d7af2aa43a3416cb9ee4d0677eda484/result.json`，日志为 `artifacts/installer-acceptance-0.28-verified.log`。独立复核见 `artifacts/installer-postflight-0.28.json`：测试安装目录、注册、快捷方式、哨兵及 NIRIA 进程已清理；项目内隔离资料和失败证据保留。此项仅覆盖本机当前用户、中文及空格路径，不覆盖所有用户安装或其他 Windows 环境。
+
+完整首版继续进行，六项验收对照见 [开发状态](development-status.md)。真实模型与立绘质量、实际 Nextcloud、实体双 Windows、长期体验与许可/发行未完成。2026-11-14 只读确认 Debian 为 Stopped，未启动发行版或部署 Nextcloud；后续真实服务与实体设备验收仍缺输入。以下为 **0.20.0 停工时的原始交接记录**，其中“当前停止”“以后明确恢复”等描述属于停工时的历史状态，已由本节的恢复要求更新。
+
+## 0.20.0 原始停工记录
+
 交接日期：2026-11-14（Asia/Taipei）。用户要求完成当前工作后停止开发，将代码上传公开仓库，其余留待以后继续。本次不继续扩展首版范围，不安排后台任务或自动续工。
 
 ## 交接状态

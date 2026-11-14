@@ -1,18 +1,20 @@
 import http from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { generateAction, ServiceError } from "./image-service.mjs";
-import { CompanionStore, validateAvatar } from "../core/store.mjs";
+import { CompanionStore } from "../core/store.mjs";
 import { CompanionService, buildContext, previewContext } from "../core/chat-service.mjs";
 import { contextReviewBasis } from "./public/context-review.js";
-import { encryptBackup, decryptBackup } from "../core/backup.mjs";
+import { BackupService } from "../core/backup-service.mjs";
 import { SyncService } from "../core/sync-service.mjs";
 import { SpeechService } from "../core/speech-service.mjs";
 import { Connections } from "../core/connections.mjs";
 import { stateEvents } from "../core/state-events.mjs";
 import { adoptLive2D } from "../core/live2d-adoption.mjs";
+import { adoptImageAvatar } from "../core/avatar-adoption.mjs";
+import { generateImage } from "../core/image-generation.mjs";
 import { live2DRuntimeInfo } from "./public/live2d-runtime.js";
 
 const publicRoot = new URL("./public/", import.meta.url);
@@ -45,6 +47,7 @@ const files = new Map([
   ["/context-review.js", ["context-review.js", "text/javascript; charset=utf-8"]],
   ["/chat-activity.js", ["chat-activity.js", "text/javascript; charset=utf-8"]],
   ["/forget-review.js", ["forget-review.js", "text/javascript; charset=utf-8"]],
+  ["/backup-controls.js", ["backup-controls.js", "text/javascript; charset=utf-8"]],
   ["/image-analysis.js", ["image-analysis.js", "text/javascript; charset=utf-8"]],
   ["/animeface.js", ["animeface.js", "text/javascript; charset=utf-8"]],
   ["/vendor/animeface/model.json", ["vendor/animeface/model.json", "application/json; charset=utf-8"]],
@@ -93,12 +96,30 @@ function safeEqual(actual, expected) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function createPrototypeServer({ generator = generateAction, timeoutMs = 180_000, store, companion, sync, speech, vault } = {}) {
+export function createPrototypeServer({ generator = generateAction, timeoutMs = 180_000, store, companion, sync, speech, vault, backupOptions } = {}) {
   const token = randomBytes(32).toString("hex");
   const voice = speech || (store && new SpeechService(store));
   const synchronization = sync || (store && new SyncService(store, { beforeApply: () => { companion.cancel(); voice.cancel(); } }));
   let busy = false;
+  let replacingCompanion = false;
   const connections = new Connections({ companion, speech: voice, synchronization, vault, imageBusy: () => busy });
+  const backup = store && new BackupService(store, {
+    ...backupOptions,
+    basis: () => createHash("sha256").update(JSON.stringify([store.stateVersion, store.restoreVersion,
+      synchronization.meta.vaultId, synchronization.meta.keyTag, synchronization.meta.lastSuccess,
+      synchronization.meta.rotation, synchronization.rotation.plan?.id, connections.versions.get("sync"),
+      !!synchronization.connection, !!synchronization.pair, synchronization.auto])).digest("hex"),
+    canRestore: () => {
+      connections.assertReady();
+      if (connections.pendingPairWrites) throw new ServiceError(409, "配对码保存设置正在处理，请等候结束后再恢复备份。");
+      if (busy || replacingCompanion) throw new ServiceError(409, "请先停止图片请求，或等待当前恢复完成，再恢复备份。");
+      if (companion.active) throw new ServiceError(409, "请先停止正在处理的请求，再恢复备份。");
+      if (synchronization.active) throw new ServiceError(409, "请先停止同步并等待任务结束，再恢复备份。");
+      if (synchronization.meta.rotation) throw new ServiceError(409, "请先只读核对换钥结果，再恢复备份。");
+    },
+    beforeRestore: () => voice.cancel(),
+    afterRestore: async () => { connections.current.delete("sync"); await connections.rememberPair(false); }
+  });
   const server = http.createServer(async (request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("X-Content-Type-Options", "nosniff");
@@ -162,7 +183,7 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           if (parameters.has("memories") && parameters.get("memories") !== "none") throw new ServiceError(400, "记忆读取范围无效。");
           const snapshot = store.clientSnapshot({ assets: parameters.get("assets") !== "0", recentMessages: parameters.get("messages") === "recent",
             includeMemories: parameters.get("memories") !== "none" });
-          return json(response, 200, { ...snapshot, avatarKey: store.avatarKey, service: companion.status(), synchronization: synchronization.status(), speech: voice.status(), connections: connections.status() });
+          return json(response, 200, { ...snapshot, avatarKey: store.avatarKey, service: companion.status(), synchronization: synchronization.status(), speech: voice.status(), connections: connections.status(), backup: backup.status() });
         }
         if (request.method === "GET" && pathname === "/api/messages") {
           const parameters = new URL(request.url, `http://${request.headers.host}`).searchParams;
@@ -192,13 +213,25 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           companion.recordInteraction();
           return json(response, 200, { ok: true });
         }
+        if (pathname === "/api/backup/cancel") return json(response, 200, backup.cancel());
+        if (backup.restoring && pathname.startsWith("/api/sync/") &&
+            !["/api/sync/cancel", "/api/sync/lock", "/api/sync/pairing"].includes(pathname)) {
+          throw new ServiceError(409, "伴侣正在恢复，请等候任务结束后再更改同步或配对设置。");
+        }
         connections.assertReady();
         if (pathname === "/api/connection") {
           if (companion.active) throw new ServiceError(409, "请先停止正在处理的请求，再切换服务。");
           await connections.configure("chat", input);
           return json(response, 200, companion.status());
         }
-        if (pathname === "/api/connection/test") return json(response, 200, await companion.testConnection());
+        if (pathname === "/api/connection/test") {
+          const previous = companion.active, pending = companion.testConnection();
+          const active = companion.active !== previous ? companion.active : null;
+          const disconnect = () => { if (!response.writableFinished) active?.abort(); };
+          response.once("close", disconnect);
+          try { return json(response, 200, await pending); }
+          finally { response.off("close", disconnect); }
+        }
         if (pathname === "/api/context/preview") {
           const context = previewContext(store.state, input.draft);
           const previewBasis = contextReviewBasis({ identity: store.state.identity, settings: store.state.settings,
@@ -207,14 +240,23 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           return json(response, 200, { ...context, previewBasis });
         }
         if (pathname === "/api/chat") {
-          const disconnect = () => { if (!response.writableFinished) companion.cancel(); };
+          const previous = companion.active, pending = companion.send(input, { snapshot: false });
+          const active = companion.active !== previous ? companion.active : null;
+          const disconnect = () => { if (!response.writableFinished) active?.abort(); };
           response.once("close", disconnect);
-          try { return json(response, 200, await companion.send(input, { snapshot: false })); }
+          try { return json(response, 200, await pending); }
           finally { response.off("close", disconnect); }
         }
         if (pathname === "/api/cancel") { companion.cancel(); return json(response, 200, { ok: true }); }
         if (pathname === "/api/speech/configure") { await connections.configure("speech", input); return json(response, 200, voice.status()); }
-        if (pathname === "/api/speech/speak") return json(response, 200, await voice.speak(input));
+        if (pathname === "/api/speech/speak") {
+          const previous = voice.active, pending = voice.speak(input);
+          const active = voice.active !== previous ? voice.active : null;
+          const disconnect = () => { if (!response.writableFinished) active?.abort(); };
+          response.once("close", disconnect);
+          try { return json(response, 200, await pending); }
+          finally { response.off("close", disconnect); }
+        }
         if (pathname === "/api/speech/cancel") { voice.cancel(); return json(response, 200, { ok: true }); }
         if (pathname === "/api/sync/configure") { await connections.configure("sync", input); return json(response, 200, synchronization.status()); }
         if (pathname === "/api/sync/create") {
@@ -232,31 +274,33 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
         if (pathname === "/api/sync/rotation/recover") return json(response, 200, await connections.recoverSyncRotation(input));
         if (pathname === "/api/sync/remember") { await connections.rememberPair(input.rememberPair); return json(response, 200, connections.status()); }
         if (pathname === "/api/sync/join") {
+          if (busy || replacingCompanion || backup.restoring) throw new ServiceError(409, "请先停止图片请求，或等待当前恢复完成，再加入并恢复。");
           if (companion.active) throw new ServiceError(409, "请先停止聊天，再加入并恢复。");
-          await synchronization.join(input.code); await connections.rememberPair(input.rememberPair ?? false);
-          return json(response, 200, synchronization.status());
+          replacingCompanion = true;
+          try {
+            await synchronization.join(input.code); await connections.rememberPair(input.rememberPair ?? false);
+            return json(response, 200, synchronization.status());
+          } finally { replacingCompanion = false; }
         }
         if (pathname === "/api/sync/probe") return json(response, 200, await synchronization.probe());
         if (pathname === "/api/sync/run") return json(response, 200, await synchronization.sync());
         if (pathname === "/api/sync/lock") {
-          await connections.rememberPair(false);
+          const result = synchronization.lock();
           connections.current.delete("sync");
-          return json(response, 200, synchronization.lock());
+          try { await connections.rememberPair(false); }
+          catch { throw new ServiceError(503, "本次会话已锁定，但未能清除本机保存的配对码；重新启动可能自动解锁。请检查本机安全存储后再清除已保存配置。"); }
+          return json(response, 200, result);
         }
         if (pathname === "/api/sync/cancel") { synchronization.active?.abort(); return json(response, 200, { ok: true }); }
         if (pathname === "/api/sync/resolve") return json(response, 200, synchronization.resolve(input.key, input.headId));
         if (pathname === "/api/credentials/forget") { await connections.forget(input.slot || "all"); return json(response, 200, connections.status()); }
-        if (pathname === "/api/backup/export") return json(response, 200, await encryptBackup(store.exportData(), input.password));
-        if (pathname === "/api/backup/restore") {
-          if (companion.active) throw new ServiceError(409, "请先停止正在处理的请求，再恢复备份。");
-          const restored = await decryptBackup(input.backup, input.password);
-          // Recheck after asynchronous key derivation.
-          if (companion.active) throw new ServiceError(409, "有新对话正在处理，请稍后恢复备份。");
-          voice.cancel();
-          store.restore(restored);
-          connections.current.delete("sync");
-          await connections.rememberPair(false);
-          return json(response, 200, { ok: true });
+        if (["/api/backup/export", "/api/backup/restore"].includes(pathname)) {
+          const previous = backup.active, pending = pathname.endsWith("/export") ? backup.export(input.password) : backup.restore(input);
+          const active = backup.active !== previous ? backup.active : null;
+          const disconnect = () => { if (!response.writableFinished && active) backup.cancel(active); };
+          response.once("close", disconnect);
+          try { return json(response, 200, await pending); }
+          finally { response.off("close", disconnect); }
         }
         if (pathname === "/api/avatar/live2d") {
           if (!live2DRuntimeInfo.available)
@@ -265,8 +309,9 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           return json(response, 200, adoptLive2D(store, input, { runtimeReady: live2DRuntimeInfo.available,
             beforeApply: () => { validateLive2DMoc(input.avatar); companion.cancel(); voice.cancel(); } }));
         }
-        if (pathname === "/api/avatar" && input.format === "niria-live2d-avatar")
-          throw new ServiceError(400, "请先在 Live2D 导入窗口预览，再采用模型。");
+        if (pathname === "/api/avatar") return json(response, 200, adoptImageAvatar(store, input, {
+          beforeApply: () => { companion.cancel(); voice.cancel(); }
+        }));
         const mutations = new Map([
           ["/api/identity", () => store.identity(input)],
           ["/api/settings", () => store.settings(input)],
@@ -274,8 +319,7 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           ["/api/messages/delete", () => store.deleteMessage(input.id)],
           ["/api/memories/add", () => store.addMemory(input)],
           ["/api/memories/edit", () => store.editMemory(input.id, input)],
-          ["/api/memories/delete", () => store.deleteMemory(input.id, input.forgetSources === true, input.previewToken)],
-          ["/api/avatar", () => store.mutate((state) => { state.avatar = validateAvatar(input); })]
+          ["/api/memories/delete", () => store.deleteMemory(input.id, input.forgetSources === true, input.previewToken)]
         ]);
         if (mutations.has(pathname)) {
           if (pathname === "/api/memories/delete" && input.forgetSources === true) {
@@ -294,6 +338,7 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           throw new ServiceError(403, "实验台会话已失效，请刷新页面后重试。");
         }
         if (busy) throw new ServiceError(409, "已有生成请求正在处理，请等候完成后再试。");
+        if (replacingCompanion || backup?.restoring) throw new ServiceError(409, "伴侣正在恢复，请等候完成后再确认图片生成。");
         connections.assertReady();
         busy = true;
         const controller = new AbortController();
@@ -305,7 +350,8 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
         response.once("close", disconnect);
         try {
           const input = await readJson(request);
-          const result = await generator(connections.image(input), { signal: controller.signal });
+          if (!input || typeof input !== "object" || Array.isArray(input)) throw new ServiceError(400, "请求内容无效。");
+          const result = await generateImage(store, connections.image(input), { generator, signal: controller.signal });
           if (!response.destroyed) json(response, 200, result);
         } finally {
           clearTimeout(timeout);
@@ -325,6 +371,8 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
   });
   const subscribe = store ? stateEvents(server, store) : null;
   server.connections = connections;
+  server.backup = backup;
+  server.once("close", () => backup?.cancel());
   return server;
 }
 

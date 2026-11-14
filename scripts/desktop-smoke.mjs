@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, copyFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
 import electron from "electron";
 import { davFixture } from "../tests/fixtures/dav.mjs";
+import { CompanionStore } from "../core/store.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const artifacts = join(root, "artifacts");
@@ -46,10 +47,34 @@ if (process.argv.includes("--live2d-real")) {
   } finally { await live2dDav.close(); }
   console.log(JSON.stringify({ packaged, phases }, null, 2));
 } else {
-const windows = await run("windows", join(artifacts, `desktop-data-${Date.now()}`));
+const windowsDav = await davFixture();
+let windows;
+try { windows = await run("windows", join(artifacts, `desktop-data-${Date.now()}`), windowsDav.baseUrl); }
+finally { await windowsDav.close(); }
 const credentialsDirectory = join(artifacts, `credential-restart-${Date.now()}`);
 const credentials = [];
 for (const phase of ["credential-write", "credential-read", "credential-empty"]) credentials.push(await run(phase, credentialsDirectory));
+const credentialFailureDirectory = join(artifacts, `credential-corrupt-${Date.now()}`);
+await mkdir(credentialFailureDirectory);
+const corruptBytes = Buffer.from("Isolated corrupt credential fixture; preserve these exact original bytes.");
+const credentialFile = join(credentialFailureDirectory, "credentials.sqlite");
+await writeFile(credentialFile, corruptBytes);
+const fixtureStore = new CompanionStore(join(credentialFailureDirectory, "companion.sqlite"));
+fixtureStore.addUser("损坏凭据时仍保留的共同经历");
+fixtureStore.addMemory({ content: "损坏凭据时仍保留的长期记忆" });
+const fixtureIdentity = fixtureStore.state.identity.id;
+fixtureStore.close();
+const credentialFailures = [];
+for (const phase of ["credential-corrupt", "credential-corrupt-restart"]) {
+  credentialFailures.push(await run(phase, credentialFailureDirectory));
+  assert.deepEqual(await readFile(credentialFile), corruptBytes, "Corrupt credential fixture must remain unchanged");
+  const retained = new CompanionStore(join(credentialFailureDirectory, "companion.sqlite"));
+  try {
+    assert.equal(retained.state.identity.id, fixtureIdentity);
+    assert.equal(retained.state.memories[0].content, "损坏凭据时仍保留的长期记忆");
+    assert.equal(retained.state.calls.length, 0);
+  } finally { retained.close(); }
+}
 const layoutDirectory = join(artifacts, `layout-restart-${Date.now()}`);
 const layout = [];
 for (const phase of ["layout-write", "layout-read", "layout-hidden"]) layout.push(await run(phase, layoutDirectory));
@@ -95,5 +120,5 @@ for (const [flag, file, version] of [
   upgrade.push({ phase: "old-runtime-downgrade", oldVersion: fixture.oldVersion, downgradeBlocked: true });
   upgrade.push(await run("storage-restart", directory));
 }
-console.log(JSON.stringify({ windows, credentials, layout, rotation, upgrade }, null, 2));
+console.log(JSON.stringify({ windows, credentials, credentialFailures, layout, rotation, upgrade }, null, 2));
 }

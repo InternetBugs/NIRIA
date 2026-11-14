@@ -103,12 +103,15 @@
 
         <section class="requests-section">
           <h2>本次调用</h2>
+          <button id="stop-generation" type="button" class="text-button" hidden>停止等待本次生成</button>
           <p id="requests-empty" class="muted">尚未调用生成服务。</p>
+          <p id="image-log-location" class="field-hint" hidden>本机调用记录可在首页设置的“备份与调用”中查看。停止等待不代表服务未处理或未计费。</p>
           <ol id="request-log" class="request-log" aria-label="本次生成调用记录"></ol>
         </section>
 
         <div class="export-area">
           <button id="save-companion" class="button wide" type="button" hidden>保存到伴侣</button>
+          <p id="save-status" class="field-hint" role="status"></p>
           <button id="export-button" class="button wide" type="button" disabled>导出形象素材包</button>
           <label class="text-button file-label">导入已有素材包<input id="import-package" type="file" accept=".json,application/json"></label>
           <p>素材包包含图片与动作，不包含服务密钥。</p>

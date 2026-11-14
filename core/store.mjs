@@ -7,13 +7,13 @@ import { ServiceError, pngBytes } from "../prototype/image-service.mjs";
 import { EXPRESSIONS } from "./expression.mjs";
 import { inspectLive2DAvatar } from "../prototype/public/live2d-avatar.js";
 import { SQLiteState } from "./sqlite-state.mjs";
-import { clearMemoryTermCache } from "./memory-term-cache.mjs";
+import { clearMemoryRecallIndex, pruneMemoryRecallIndex } from "./memory-recall-index.mjs";
 import { MessageHistory } from "./message-history.mjs";
 import { MemoryList } from "./memory-list.mjs";
 import { applyStateDeletions, mergeDeletionMarkers, stateDeletionRecords } from "./deletion-cascade.mjs";
 import { forgettingPreview, planForgetting } from "./forget-preview.mjs";
 import { messageHash, associatedSources, mergeSourceReferences, supersededMessageIds, automaticMemoryAllowed,
-  linkedMessageIds, permissionBlockedMessageIds, invalidateSupersededMemories, preserveCorrections } from "./memory-provenance.mjs";
+  linkedMessageIds, permissionBlockedMessageIds, permissionBlockedMemoryIds, invalidateSupersededMemories, preserveCorrections } from "./memory-provenance.mjs";
 
 export const now = () => new Date().toISOString();
 export { messageHash };
@@ -39,7 +39,7 @@ export function text(value, label, max = 8000, allowEmpty = false) {
 }
 
 export function validMemory(state, memory, at = Date.now(), lookup) {
-  const superseded = lookup?.superseded || supersededMessageIds(state);
+  const superseded = lookup?.superseded || supersededMessageIds(state, at);
   return !memory.deleted && !memory.invalidated && !memory.conflicted &&
     (!memory.expiresAt || Date.parse(memory.expiresAt) > at) &&
     memory.sources.every((source) => {
@@ -57,7 +57,7 @@ export function validMemory(state, memory, at = Date.now(), lookup) {
 }
 export function memoryValidator(state, at = Date.now()) {
   const lookup = { messages: new Map(state.messages.map((message) => [message.id, message])), hashes: new Map(),
-    superseded: supersededMessageIds(state) };
+    superseded: supersededMessageIds(state, at) };
   return (memory) => validMemory(state, memory, at, lookup);
 }
 
@@ -110,7 +110,8 @@ export function validateSnapshot(state) {
   const integer = (n, min = 1, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(n) && n >= min && n <= max;
   const date = (value) => typeof value === "string" && value.length <= 80 && Number.isFinite(Date.parse(value));
   const references = (refs) => Array.isArray(refs) && refs.length <= 50 &&
-    refs.every((s) => typeof s?.id === "string" && s.id.length <= 100 && integer(s.revision));
+    refs.every((s) => typeof s?.id === "string" && s.id.length <= 100 && integer(s.revision) &&
+      (s.contentHash === undefined || (typeof s.contentHash === "string" && /^[a-f0-9]{64}$/.test(s.contentHash))));
   const correctionReferences = (refs, max = 50) => Array.isArray(refs) && refs.length <= max &&
     refs.every((s) => typeof s?.id === "string" && s.id.length > 0 && s.id.length <= 100 && integer(s.revision) &&
       (s.hash === undefined || (typeof s.hash === "string" && /^[a-f0-9]{64}$/.test(s.hash))));
@@ -178,9 +179,10 @@ export function validateSnapshot(state) {
       Object.entries(state.usage).some(([day, counts]) => !/^\d{4}-\d{2}-\d{2}$/.test(day) || !counts ||
         typeof counts !== "object" || Array.isArray(counts) || Object.values(counts).some((n) => !integer(n, 0))))) invalid();
   for (const call of state.calls) {
-    if (typeof call?.id !== "string" || !["chat", "memory", "care", "test", "speech"].includes(call.kind) ||
+    if (typeof call?.id !== "string" || !["chat", "memory", "care", "test", "speech", "image"].includes(call.kind) ||
         !["pending", "completed", "failed", "unknown"].includes(call.status) || !date(call.at) ||
-        typeof call.model !== "string" || typeof call.endpoint !== "string") invalid();
+        typeof call.model !== "string" || typeof call.endpoint !== "string" ||
+        (call.kind === "image" && !["blink", "smile", "curious", "shy"].includes(call.action))) invalid();
   }
   return state;
 }
@@ -194,8 +196,11 @@ export class CompanionStore {
       this.persistence = new SQLiteState(this.db);
       this.listeners = new Set();
       this.state = this.persistence.initialize(defaults, validateSnapshot);
+      this.recallMemoryArray = this.state.memories;
       this.messageVersion = randomUUID();
       this.memoryVersion = randomUUID();
+      this.restoreVersion = randomUUID();
+      this.stateVersion = randomUUID();
       this.history = new MessageHistory(this);
       this.memories = new MemoryList(this, memoryValidator);
       const before = this.snapshot();
@@ -218,12 +223,23 @@ export class CompanionStore {
   }
   save(before) {
     invalidateSupersededMemories(this.state);
-    clearMemoryTermCache();
     const changes = this.persistence.save(this.state, before);
+    if (changes.changed) this.stateVersion = randomUUID();
+    if (changes.avatar) this.avatarReference = undefined;
+    pruneMemoryRecallIndex(this.state.memories, () => {
+      const valid = memoryValidator(this.state);
+      const denied = permissionBlockedMemoryIds(this.state, "allowModel");
+      return this.state.memories.filter((memory) => valid(memory) && !denied.has(memory.id) && (memory.allowModel ?? this.state.settings.allowModel));
+    }, this.recallMemoryArray);
+    this.recallMemoryArray = this.state.memories;
     if (changes.messages) this.messageVersion = randomUUID();
     if (changes.memories || (before && !isDeepStrictEqual(this.state.conflicts, before.conflicts))) this.memoryVersion = randomUUID();
   }
-  close() { clearMemoryTermCache(); this.db.close(); }
+  close() {
+    clearMemoryRecallIndex(this.state.memories);
+    clearMemoryRecallIndex(this.recallMemoryArray);
+    this.db.close();
+  }
   get avatarKey() {
     if (this.avatarReference !== this.state.avatar) {
       this.avatarReference = this.state.avatar;
@@ -280,6 +296,8 @@ export class CompanionStore {
     const before = this.snapshot();
     const previousMessageVersion = this.messageVersion;
     const previousMemoryVersion = this.memoryVersion;
+    const previousRestoreVersion = this.restoreVersion;
+    const previousStateVersion = this.stateVersion;
     const rollback = [];
     const ownsTransaction = !this.db.isTransaction;
     if (ownsTransaction) this.db.exec("BEGIN IMMEDIATE");
@@ -296,9 +314,14 @@ export class CompanionStore {
       return result;
     } catch (error) {
       if (ownsTransaction) this.db.exec("ROLLBACK");
+      clearMemoryRecallIndex(this.state.memories);
+      clearMemoryRecallIndex(this.recallMemoryArray);
       this.state = before;
+      this.recallMemoryArray = this.state.memories;
       this.messageVersion = previousMessageVersion;
       this.memoryVersion = previousMemoryVersion;
+      this.restoreVersion = previousRestoreVersion;
+      this.stateVersion = previousStateVersion;
       for (const restore of rollback.reverse()) restore();
       throw error;
     }
@@ -489,6 +512,11 @@ export class CompanionStore {
       if (!valid(memory)) memory.invalidated = true;
     }
     validateSnapshot(next);
-    this.mutate((_state, onRollback) => { this.state = next; onRollback(applyExtension?.()); });
+    this.mutate((_state, onRollback) => {
+      this.state = next;
+      this.restoreVersion = randomUUID();
+      onRollback(applyExtension?.());
+    });
+    this.afterRestore?.();
   }
 }

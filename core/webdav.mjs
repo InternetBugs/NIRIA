@@ -14,15 +14,34 @@ export function davBase(value) {
 export function strongETag(value) {
   return typeof value === "string" && /^"[^"\r\n]{1,250}"$/.test(value);
 }
-async function bounded(response, limit = MAX_SYNC_BYTES) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of response.body || []) {
-    size += chunk.byteLength;
-    if (size > limit) { await response.body?.cancel().catch(() => {}); throw new ServiceError(502, "WebDAV 返回内容超过同步大小上限。"); }
-    chunks.push(Buffer.from(chunk));
+export const syncStopped = () => new ServiceError(504,
+  "同步已停止或超时，本机资料已保留；已发出的写入结果可能未知，下次同步会重新检查服务器状态。");
+export function checkSync(signal) {
+  if (signal?.aborted) throw syncStopped();
+}
+const interrupted = (error) => ["AbortError", "TimeoutError"].includes(error?.name);
+async function discard(response) {
+  try { await response.body?.cancel(); } catch { /* Discard failures never replace the operation result. */ }
+}
+async function bounded(response, signal, limit = MAX_SYNC_BYTES) {
+  try {
+    checkSync(signal);
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of response.body || []) {
+      checkSync(signal);
+      size += chunk.byteLength;
+      if (size > limit) throw new ServiceError(502, "WebDAV 返回内容超过同步大小上限。");
+      chunks.push(Buffer.from(chunk));
+    }
+    checkSync(signal);
+    return Buffer.concat(chunks);
+  } catch (error) {
+    await discard(response);
+    if (signal?.aborted || interrupted(error)) throw syncStopped();
+    if (error instanceof ServiceError) throw error;
+    throw new ServiceError(502, "未能完整读取 WebDAV 资料，本机资料已保留，请检查网络和服务器状态。");
   }
-  return Buffer.concat(chunks);
 }
 
 export class WebDAV {
@@ -38,20 +57,24 @@ export class WebDAV {
     return new URL(path, this.baseUrl).href;
   }
   async request(method, path, { headers = {}, body, signal } = {}) {
+    checkSync(signal);
     try {
-      return await this.fetch(this.url(path), {
+      const response = await this.fetch(this.url(path), {
         method, headers: { ...(this.authorization ? { Authorization: this.authorization } : {}), ...headers },
         body, signal, redirect: "error"
       });
-    } catch {
-      throw new ServiceError(signal?.aborted ? 504 : 502, signal?.aborted
-        ? "同步已停止或超时，本机资料已保留。下次同步会重新检查服务器状态。"
-        : "无法连接 WebDAV，请检查地址、网络和服务器状态。");
+      if (signal?.aborted) { await discard(response); throw syncStopped(); }
+      return response;
+    } catch (error) {
+      if (signal?.aborted || interrupted(error)) throw syncStopped();
+      throw new ServiceError(502, "无法连接 WebDAV，请检查地址、网络和服务器状态。");
     }
   }
-  async require(response, statuses) {
+  async require(response, statuses, signal) {
+    if (signal?.aborted) { await discard(response); throw syncStopped(); }
     if (!statuses.includes(response.status)) {
-      await response.body?.cancel();
+      await discard(response);
+      checkSync(signal);
       throw new ServiceError(502, response.status === 401 || response.status === 403
         ? "WebDAV 拒绝访问，请检查账号、应用专用密码与文件夹权限。"
         : "WebDAV 未接受操作，请检查文件夹地址与服务能力。");
@@ -59,23 +82,23 @@ export class WebDAV {
   }
   async directory(folder, signal) {
     const created = await this.request("MKCOL", folder, { signal });
-    await this.require(created, [201, 405]);
-    await created.body?.cancel();
+    await this.require(created, [201, 405], signal);
+    await discard(created);
     const listed = await this.request("PROPFIND", folder, {
       signal, headers: { Depth: "0", "Content-Type": "application/xml; charset=utf-8" },
       body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>'
     });
-    await this.require(listed, [207]);
-    const xml = (await bounded(listed, 1024 * 1024)).toString("utf8");
+    await this.require(listed, [207], signal);
+    const xml = (await bounded(listed, signal, 1024 * 1024)).toString("utf8");
     if (!/DAV:/.test(xml) || !/<(?:[\w-]+:)?multistatus\b/i.test(xml) || !/<(?:[\w-]+:)?collection\b/i.test(xml)) throw new ServiceError(502, "服务没有返回有效的 WebDAV 文件夹能力。");
   }
   async read(path, signal) {
     const response = await this.request("GET", path, { signal });
-    if (response.status === 404) { await response.body?.cancel(); return null; }
-    await this.require(response, [200]);
+    if (response.status === 404) { await discard(response); checkSync(signal); return null; }
+    await this.require(response, [200], signal);
     const etag = response.headers.get("etag");
-    if (!strongETag(etag)) { await response.body?.cancel(); throw new ServiceError(502, "WebDAV 未提供强 ETag，无法安全进行并发同步。"); }
-    return { etag, data: await bounded(response) };
+    if (!strongETag(etag)) { await discard(response); checkSync(signal); throw new ServiceError(502, "WebDAV 未提供强 ETag，无法安全进行并发同步。"); }
+    return { etag, data: await bounded(response, signal) };
   }
   async write(path, data, etag, signal) {
     if (Buffer.byteLength(data) > MAX_SYNC_BYTES) throw new ServiceError(413, "同步资料超过当前 100 MB 上限。");
@@ -83,9 +106,10 @@ export class WebDAV {
       signal, body: data,
       headers: { "Content-Type": "application/octet-stream", ...(etag ? { "If-Match": etag } : { "If-None-Match": "*" }) }
     });
-    if (response.status === 412) { await response.body?.cancel(); return false; }
-    await this.require(response, [200, 201, 204]);
-    await response.body?.cancel();
+    if (response.status === 412) { await discard(response); checkSync(signal); return false; }
+    await this.require(response, [200, 201, 204], signal);
+    await discard(response);
+    checkSync(signal);
     return true;
   }
   async probe(folder, signal) {
@@ -111,6 +135,7 @@ export class WebDAV {
           await cleanup.body?.cancel();
         } catch { /* Only this uniquely named probe can remain; never delete the folder. */ }
       }
+      checkSync(signal);
     }
   }
 }

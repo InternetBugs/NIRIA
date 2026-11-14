@@ -2,7 +2,7 @@ import { createHash, randomUUID, randomBytes, createCipheriv, createDecipheriv }
 import { defaults, validateSnapshot, validateAvatar, now, memoryValidator } from "./store.mjs";
 import { ServiceError } from "../prototype/image-service.mjs";
 import { applyStateDeletions, cascadeDeletions, mergeDeletionMarkers, stateDeletionRecords } from "./deletion-cascade.mjs";
-import { permissionBlockedMessageIds, invalidateSupersededMemories } from "./memory-provenance.mjs";
+import { permissionBlockedMessageIds, permissionBlockedMemoryIds, invalidateSupersededMemories } from "./memory-provenance.mjs";
 
 const kinds = ["identity", "message", "memory", "avatar"];
 const uuid = (s) => typeof s === "string" && /^[a-f0-9-]{36}$/.test(s);
@@ -23,6 +23,7 @@ export function project(state) {
   records.set(recordKey("identity", state.identity.id), { kind: "identity", id: state.identity.id, value: clean(state.identity) });
   records.set(recordKey("avatar", state.identity.id), { kind: "avatar", id: state.identity.id, value: state.avatar });
   const excluded = permissionBlockedMessageIds(state, "allowSync");
+  const excludedMemories = permissionBlockedMemoryIds(state, "allowSync");
   for (const message of state.messages) {
     if (message.deleted || message.status === "pending") continue;
     records.set(recordKey("message", message.id), { kind: "message", id: message.id,
@@ -31,7 +32,7 @@ export function project(state) {
   for (const memory of state.memories) {
     if (memory.deleted) continue;
     records.set(recordKey("memory", memory.id), { kind: "memory", id: memory.id,
-      value: memory.syncExcluded || !(memory.allowSync ?? state.settings.allowSync) ? null : clean(memory) });
+      value: memory.syncExcluded || excludedMemories.has(memory.id) || !(memory.allowSync ?? state.settings.allowSync) ? null : clean(memory) });
   }
   return records;
 }

@@ -55,6 +55,7 @@ export async function verifyMemoryBrowsing({ store, evaluate, capture }) {
     await evaluate("document.querySelector('[data-view=\"memories\"]').click()");
     await wait(`${first(246)} && document.querySelectorAll('#memory-list .memory-card').length === 60`);
     result.memoryPageLimited = true;
+    await wait("window.__memoryReads.length > 0");
     result.memoryReadsCompact = await evaluate("window.__memoryReads.length > 0 && window.__memoryReads.every(read => read.mode === 'none' && !read.full)");
     await evaluate("document.querySelector('#memory-older').click()");
     await wait(first(186));

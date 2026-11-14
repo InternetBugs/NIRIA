@@ -3,9 +3,11 @@ import { text, validMemory, now, messageHash } from "./store.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { recallMemories } from "./memory-recall.mjs";
 import { expressionOptions, expressionPrompt, parseExpressionReply } from "./expression.mjs";
-import { modelBlockedMessageIds, automaticMemoryAllowed } from "./memory-provenance.mjs";
+import { modelBlockedMessageIds, permissionBlockedMemoryIds, memoryContentHash, contextExpiry, automaticMemoryAllowed } from "./memory-provenance.mjs";
 import { applyStateDeletions } from "./deletion-cascade.mjs";
 const fingerprint = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const stopped = () => new ServiceError(504, "请求已停止或超时，结果未知；服务可能已经处理并计费，请先查看调用记录，没有自动重试。");
+const recordingFailed = () => new ServiceError(503, "服务请求可能已经处理，但本机未能保存结果状态；已有消息仍保留，请先检查服务端记录，不要立即重试。");
 
 export function chatEndpoint(value) {
   let url;
@@ -56,7 +58,7 @@ export async function complete(connection, messages, { signal, fetchImpl = fetch
     if (typeof content !== "string" || !content.trim() || content.length > 16000) throw new ServiceError(502, "服务未返回有效文本回复。");
     return content.trim();
   } catch (error) {
-    if (signal?.aborted) throw new ServiceError(504, "请求已停止或超时；服务可能已经处理，请查看调用记录后手动重试。");
+    if (signal?.aborted || ["AbortError", "TimeoutError"].includes(error?.name)) throw stopped();
     if (error instanceof ServiceError) throw error;
     throw new ServiceError(502, "未能读取对话服务回复，请检查网络和接口兼容性。");
   }
@@ -64,14 +66,14 @@ export async function complete(connection, messages, { signal, fetchImpl = fetch
 
 export function buildContext(state, { care = false, query } = {}) {
   if (state.identity.conflicted) throw new ServiceError(409, "伴侣资料存在同步冲突，请先选择要保留的版本。");
-  const blocked = modelBlockedMessageIds(state);
+  const at = Date.now(), blocked = modelBlockedMessageIds(state, at);
   let messageBudget = 32000;
   const conflicted = new Set(state.messages.filter((m) => m.conflicted).map((m) => m.id));
   const messages = state.messages.filter((m) => !m.deleted && !m.conflicted && !conflicted.has(m.replyTo) && m.status === "completed" &&
     !blocked.has(m.id) && !blocked.has(m.replyTo)).slice(-24).toReversed()
     .filter((m) => { if (m.content.length > messageBudget) return false; messageBudget -= m.content.length; return true; }).reverse();
   const recallQuery = query === undefined ? messages.filter((m) => m.role === "user").slice(-3).map((m) => m.content).join("\n") : query;
-  const recalled = recallMemories(state, { query: recallQuery });
+  const recalled = recallMemories(state, { query: recallQuery, at });
   const memories = recalled.map((item) => item.memory);
   const identity = state.identity;
   const system = [
@@ -89,13 +91,10 @@ export function buildContext(state, { care = false, query } = {}) {
   if (care) payload.push({ role: "user", content: "这是应用设置允许的一次主动关心。参考近期聊天，发一条简短、自然、不施压的问候。不要假装知道我现在正在做什么，也不要声称已经等待或观察了我。" });
   return {
     messages: payload,
-    validUntil: memories.reduce((deadline, memory) => {
-      const expiry = Date.parse(memory.expiresAt);
-      return Number.isFinite(expiry) ? Math.min(deadline ?? expiry, expiry) : deadline;
-    }, null),
+    validUntil: contextExpiry(state, messages, memories, at),
     memoryPreview: recalled.map(({ memory, reason }) => ({ id: memory.id, content: memory.content, confirmed: memory.confirmed, reason })),
     refs: { personaRevision: identity.revision, personaHash: fingerprint(identity),
-      memoryRefs: recalled.map(({ memory: m, reason }) => ({ id: m.id, revision: m.revision, hash: fingerprint(m), reason })),
+      memoryRefs: recalled.map(({ memory: m, reason }) => ({ id: m.id, revision: m.revision, hash: fingerprint(m), contentHash: memoryContentHash(m), reason })),
       messageRefs: messages.map((m) => ({ id: m.id, revision: m.revision, hash: messageHash(m) })), sentAt: now() }
   };
 }
@@ -115,11 +114,12 @@ export function previewContext(state, draft) {
 
 function sameSources(state, refs) {
   const blocked = modelBlockedMessageIds(state);
+  const blockedMemories = permissionBlockedMemoryIds(state, "allowModel");
   return !state.identity.conflicted && fingerprint(state.identity) === refs.personaHash && refs.messageRefs.every((source) =>
     !blocked.has(source.id) && state.messages.some((m) => m.id === source.id && m.revision === source.revision &&
       !m.deleted && !m.conflicted && messageHash(m) === source.hash)) &&
     refs.memoryRefs.every((source) => state.memories.some((m) =>
-      m.id === source.id && m.revision === source.revision && fingerprint(m) === source.hash && validMemory(state, m) && (m.allowModel ?? state.settings.allowModel)));
+      m.id === source.id && !blockedMemories.has(m.id) && m.revision === source.revision && fingerprint(m) === source.hash && validMemory(state, m) && (m.allowModel ?? state.settings.allowModel)));
 }
 
 function today(date = new Date()) { return date.toLocaleDateString("en-CA"); }
@@ -151,7 +151,10 @@ export class CompanionService {
     this.interactionRevision = 0;
     this.lastInteraction = this.clock();
   }
-  configure(input) { this.connection = validateConnection(input); }
+  configure(input) {
+    if (this.active) throw new ServiceError(409, "请先停止正在处理的请求，再切换对话服务。");
+    this.connection = validateConnection(input);
+  }
   status() { return { connected: !!this.connection, baseUrl: this.connection?.baseUrl || "", model: this.connection?.model || "", busy: !!this.active }; }
   cancel() { this.active?.abort(); }
   recordInteraction() {
@@ -168,23 +171,42 @@ export class CompanionService {
       date.getTime() - Math.max(this.lastInteraction, last ? Date.parse(last.at) : 0) >= care.intervalMinutes * 60_000;
   }
   async invoke(kind, messages, signal) {
+    if (signal?.aborted) throw stopped();
+    const connection = this.connection, identityId = this.store.state.identity.id, historyId = this.store.restoreVersion;
     const date = new Date(this.clock());
-    const call = { id: randomUUID(), kind, model: this.connection.model, endpoint: new URL(this.connection.baseUrl).origin,
+    const call = { id: randomUUID(), kind, model: connection.model, endpoint: new URL(connection.baseUrl).origin,
       at: date.toISOString(), day: today(date), status: "pending" };
-    this.store.mutate((state) => {
-      state.calls.push(call); state.calls = state.calls.slice(-500);
-      state.usage ||= {};
-      state.usage[call.day] ||= {};
-      state.usage[call.day][kind] = (state.usage[call.day][kind] || 0) + 1;
-      const days = Object.keys(state.usage).sort();
-      for (const day of days.slice(0, Math.max(0, days.length - 40))) delete state.usage[day];
-    });
+    const finish = (status) => {
+      if (this.store.state.identity.id !== identityId || this.store.restoreVersion !== historyId ||
+          !this.store.state.calls.some((item) => item.id === call.id)) return;
+      this.store.mutate((state) => { state.calls.find((item) => item.id === call.id).status = status; });
+    };
+    let recorded = false, recordingResult = false;
     try {
-      const content = await this.completion(this.connection, messages, { signal });
-      this.store.mutate((state) => { const item = state.calls.find((c) => c.id === call.id); if (item) item.status = "completed"; });
+      this.store.mutate((state) => {
+        state.calls.push(call); state.calls = state.calls.slice(-500);
+        state.usage ||= {};
+        state.usage[call.day] ||= {};
+        state.usage[call.day][kind] = (state.usage[call.day][kind] || 0) + 1;
+        const days = Object.keys(state.usage).sort();
+        for (const day of days.slice(0, Math.max(0, days.length - 40))) delete state.usage[day];
+      });
+      recorded = true;
+      const content = await this.completion(connection, messages, { signal });
+      if (signal?.aborted) throw stopped();
+      if (this.store.state.identity.id !== identityId || this.store.restoreVersion !== historyId) {
+        throw new ServiceError(409, "本次对话来源已经改变，伙伴资料已恢复，旧结果未加入记录。");
+      }
+      recordingResult = true;
+      finish("completed");
       return content;
     } catch (error) {
-      this.store.mutate((state) => { const item = state.calls.find((c) => c.id === call.id); if (item) item.status = signal.aborted ? "unknown" : "failed"; });
+      if (!recorded) throw new ServiceError(503, "本机未能保存调用记录，未向服务提交请求；已有消息保留，请检查本机存储后再试。");
+      const interrupted = signal?.aborted || error?.status === 504 || ["AbortError", "TimeoutError"].includes(error?.name);
+      try { finish(interrupted || recordingResult ? "unknown" : "failed"); }
+      catch { throw recordingFailed(); }
+      if (recordingResult) throw recordingFailed();
+      if (interrupted) throw stopped();
       throw error;
     }
   }
@@ -207,6 +229,7 @@ export class CompanionService {
     this.active = controller;
     if (care) this.activeCare = controller;
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const identityId = this.store.state.identity.id, historyId = this.store.restoreVersion;
     let user;
     let pendingId;
     let replaced = [];
@@ -270,15 +293,20 @@ export class CompanionService {
       if (!care && this.store.state.settings.autoMemory) await this.extract(user, controller.signal);
       return snapshot ? this.store.snapshot() : { ok: true };
     } catch (error) {
-      if (pendingId) this.store.mutate((state) => {
-        const reply = state.messages.find((m) => m.id === pendingId);
-        if (reply && !reply.deleted && reply.status === "pending") {
-          reply.status = controller.signal.aborted ? "cancelled" : "failed";
-          reply.error = error instanceof ServiceError ? error.message : "本次请求失败，消息已保留，可以手动重试。";
-          if (replaced.some((original) => state.messages.some((message) =>
-            message.id === original.id && !message.deleted && message.status === "completed"))) reply.error += " 原回复已保留。";
+      if (pendingId && this.store.state.identity.id === identityId && this.store.restoreVersion === historyId &&
+          this.store.state.messages.some((reply) => reply.id === pendingId && !reply.deleted && reply.status === "pending")) {
+        try {
+          this.store.mutate((state) => {
+            const reply = state.messages.find((m) => m.id === pendingId);
+            reply.status = controller.signal.aborted || error?.status === 504 ? "cancelled" : "failed";
+            reply.error = error instanceof ServiceError ? error.message : "本次请求失败，消息已保留，可以手动重试。";
+            if (replaced.some((original) => state.messages.some((message) =>
+              message.id === original.id && !message.deleted && message.status === "completed"))) reply.error += " 原回复已保留。";
+          });
+        } catch {
+          throw new ServiceError(503, "本机未能保存请求失败状态；已有消息保留，请检查本机存储。服务可能已经处理，没有自动重试。");
         }
-      });
+      }
       throw error;
     } finally {
       clearTimeout(timer);

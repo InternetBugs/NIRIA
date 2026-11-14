@@ -1,5 +1,6 @@
 import { memoryValidator } from "./store.mjs";
-import { cachedMemoryTerms } from "./memory-term-cache.mjs";
+import { memoryRecallIndex, pruneMemoryRecallIndex } from "./memory-recall-index.mjs";
+import { permissionBlockedMemoryIds } from "./memory-provenance.mjs";
 
 const segmenter = new Intl.Segmenter("zh-CN", { granularity: "word" });
 const stop = new Set([
@@ -26,32 +27,66 @@ export function recallTerms(text) {
   return words;
 }
 
+function compareDocuments(a, b) {
+  return Number(b.relevance > 0) - Number(a.relevance > 0) ||
+    b.relevance - a.relevance || Number(b.memory.confirmed) - Number(a.memory.confirmed) ||
+    b.memory.updatedAt.localeCompare(a.memory.updatedAt) || a.memory.id.localeCompare(b.memory.id) ||
+    a.position - b.position;
+}
+
+// Heap construction is linear; only the next required candidates are ordered.
+// Position preserves the old stable sort for distinct IDs that collate equally.
+function selectDocuments(documents, limit, remaining) {
+  const lengths = new Map();
+  let shortest = Infinity;
+  for (const { memory } of documents) {
+    const length = memory.content.length;
+    lengths.set(length, (lengths.get(length) || 0) + 1);
+    shortest = Math.min(shortest, length);
+  }
+  const down = (root) => {
+    const value = documents[root];
+    while (root * 2 + 1 < documents.length) {
+      let child = root * 2 + 1;
+      if (child + 1 < documents.length && compareDocuments(documents[child + 1], documents[child]) < 0) child++;
+      if (compareDocuments(value, documents[child]) <= 0) break;
+      documents[root] = documents[child];
+      root = child;
+    }
+    documents[root] = value;
+  };
+  for (let root = Math.floor(documents.length / 2) - 1; root >= 0; root--) down(root);
+  const selected = [];
+  while (documents.length && selected.length < limit && !(remaining < shortest)) {
+    const document = documents[0], last = documents.pop();
+    if (documents.length) { documents[0] = last; down(0); }
+    const length = document.memory.content.length, count = lengths.get(length) - 1;
+    if (count) lengths.set(length, count);
+    else {
+      lengths.delete(length);
+      if (length === shortest) {
+        shortest = Infinity;
+        for (const candidate of lengths.keys()) shortest = Math.min(shortest, candidate);
+      }
+    }
+    if (length > remaining) continue;
+    remaining -= length;
+    selected.push({ memory: document.memory, reason: document.relevance > 0 ? "related" : document.memory.confirmed ? "confirmed" : "recent" });
+  }
+  return selected;
+}
+
 // Retrieval is entirely local. Invalid/denied memories never enter the index.
 export function recallMemories(state, { query = "", limit = 30, budget = 12000, at = Date.now() } = {}) {
   const valid = memoryValidator(state, at);
-  const eligible = state.memories.filter((m) => valid(m) && (m.allowModel ?? state.settings.allowModel));
+  const denied = permissionBlockedMemoryIds(state, "allowModel");
+  const eligible = state.memories.filter((m) => valid(m) && !denied.has(m.id) && (m.allowModel ?? state.settings.allowModel));
   const queryTerms = recallTerms(query);
-  const documents = eligible.map((memory) => ({ memory, terms: queryTerms.size ? cachedMemoryTerms(memory, recallTerms) : new Set() }));
-  const frequencies = new Map();
-  for (const term of queryTerms) frequencies.set(term, documents.reduce((n, d) => n + Number(d.terms.has(term)), 0));
-  for (const document of documents) {
-    let relevance = 0;
-    for (const term of queryTerms) if (document.terms.has(term)) {
-      const idf = Math.log(1 + (documents.length + 1) / ((frequencies.get(term) || 0) + 1));
-      relevance += idf * (term.length > 1 ? 1 : .4);
-    }
-    document.relevance = relevance / Math.sqrt(1 + document.terms.size / 50);
-  }
-  documents.sort((a, b) => Number(b.relevance > 0) - Number(a.relevance > 0) ||
-    b.relevance - a.relevance || Number(b.memory.confirmed) - Number(a.memory.confirmed) ||
-    b.memory.updatedAt.localeCompare(a.memory.updatedAt) || a.memory.id.localeCompare(b.memory.id));
-  const selected = [];
-  let remaining = budget;
-  for (const doc of documents) {
-    if (selected.length >= limit) break;
-    if (doc.memory.content.length > remaining) continue;
-    remaining -= doc.memory.content.length;
-    selected.push({ memory: doc.memory, reason: doc.relevance > 0 ? "related" : doc.memory.confirmed ? "confirmed" : "recent" });
-  }
-  return selected;
+  let scores = new Map();
+  if (queryTerms.size) scores = memoryRecallIndex(state.memories, eligible, recallTerms).scores(queryTerms);
+  else pruneMemoryRecallIndex(state.memories, () => eligible);
+  // Oversized valid memories still contribute to topic frequencies above.
+  const documents = eligible.filter((memory) => !(memory.content.length > budget))
+    .map((memory, position) => ({ memory, position, relevance: scores.get(memory.id) || 0 }));
+  return selectDocuments(documents, limit, budget);
 }

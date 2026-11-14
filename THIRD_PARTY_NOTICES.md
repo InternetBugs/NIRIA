@@ -16,7 +16,7 @@ NIRIA 整体许可证尚未选择。本仓库公开自有源码供查看，未�
 
 本机集成固定使用 Cubism SDK for Web 5 R5，Core 采用 Live2D Proprietary Software License，Framework 采用 Live2D Open Software License。两者不是 NIRIA 自有组件，模型另有素材使用条件。取得 SDK 后应核对官方条款，再按 [Live2D 文档](docs/live2d.md) 在本机准备。
 
-允许用户添加模型的应用涉及官方可扩展应用发行许可；目前未取得许可，未提交申请或接受发行合同。源码公开不表示获准发布包含 SDK 的应用。此前本机构建的 0.19.0 安装包不上传到仓库或 Releases。详见 [Live2D 许可说明](docs/live2d-license-notice.md)。
+允许用户添加模型的应用涉及官方可扩展应用发行许可；目前未取得许可，未提交申请或接受发行合同。源码公开不表示获准发布包含 SDK 的应用。本机构建的 0.25.0 预览包与此前安装包仅供本机开发验证，不上传到仓库或 Releases。详见 [Live2D 许可说明](docs/live2d-license-notice.md)。
 
 ## npm 开发与打包依赖
 

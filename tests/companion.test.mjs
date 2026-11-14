@@ -267,6 +267,7 @@ test("companion API protects local state and supports the complete chat, memory 
   await post("/api/memories/add", { content: "用户喜欢喝茶" });
   const backup = await post("/api/backup/export", { password: "test-backup-password" });
   assert.equal(JSON.stringify(backup).includes("test-secret-key"), false);
-  await post("/api/backup/restore", { backup, password: "test-backup-password" });
+  const expectedBasis = (await (await fetch(`${base}/api/state`, { headers: { "X-Niria-Token": token } })).json()).backup.basis;
+  await post("/api/backup/restore", { backup, password: "test-backup-password", expectedBasis });
   assert.equal(store.state.memories[0].content, "用户喜欢喝茶");
 });

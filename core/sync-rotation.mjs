@@ -3,6 +3,7 @@ import { pairingCode, parsePairing, keyTag } from "./sync-pairing.mjs";
 import { observe, unseal, seal } from "./sync-model.mjs";
 import { now } from "./store.mjs";
 import { ServiceError } from "../prototype/image-service.mjs";
+import { checkSync } from "./webdav.mjs";
 
 // Only nonsecret identifiers enter sync_meta. Recovery keys remain in memory
 // and in the recovery file the user explicitly saves before the remote write.
@@ -53,17 +54,29 @@ export class SyncKeyRotation {
       let remoteMayHaveChanged = false;
       const pair = plan.current, connection = plan.connection;
       s.auto = false;
-      s.meta.rotation = { id, fromTag: keyTag(pair), toTag: keyTag(plan.next), startedAt: now(), baseUrl: connection.baseUrl };
-      s.meta.keyTag ||= keyTag(pair);
-      s.persist();
+      const previous = s.meta;
+      s.meta = { ...previous,
+        rotation: { id, fromTag: keyTag(pair), toTag: keyTag(plan.next), startedAt: now(), baseUrl: connection.baseUrl },
+        keyTag: previous.keyTag || keyTag(pair) };
+      try { s.persist(); }
+      catch {
+        s.meta = previous;
+        throw new ServiceError(503, "本机未能保存换钥准备记录，未向远端提交换钥，请检查本机存储后再试。");
+      }
       try {
         // Remove any saved old key before the remote write. The new key has
         // already been saved by the user; saving it in Windows is a separate opt-in.
         await beforeWrite();
-        if (!s.capabilities) s.capabilities = await connection.probe(s.folder(pair), signal);
+        checkSync(signal);
+        if (!s.capabilities) {
+          const capabilities = await connection.probe(s.folder(pair), signal);
+          checkSync(signal);
+          s.capabilities = capabilities;
+        }
         for (let attempt = 0; attempt < 4; attempt++) {
-          if (signal.aborted) throw new ServiceError(504, "换钥已停止。");
+          checkSync(signal);
           const remote = await connection.read(`${s.folder(pair)}state.niria`, signal);
+          checkSync(signal);
           if (!remote) throw new ServiceError(404, "同步空间还没有远端资料。请取消换钥，先成功同步一次。");
           const received = unseal(remote.data.toString("utf8"), pair.key, pair.vaultId, pair.identityId);
           const observed = observe(s.meta.manifest, s.meta.fingerprints, s.store.state, s.meta.device);
@@ -89,8 +102,12 @@ export class SyncKeyRotation {
         if (remoteMayHaveChanged) {
           throw new ServiceError(502, "换钥结果尚未确认，已暂停上传和自动同步。请保留新旧配对码，并执行只读核对；不要重新发起换钥。");
         }
-        s.meta.rotation = null;
-        s.persist();
+        const cleared = { ...s.meta, rotation: null };
+        try { s.persistence.save(cleared); }
+        catch {
+          throw new ServiceError(503, "本机未能保存换钥停止状态，已保留待核对信息；请检查本机存储后再只读核对。");
+        }
+        s.meta = cleared;
         throw error;
       }
     });

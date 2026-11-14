@@ -3,6 +3,9 @@ import { ServiceError } from "../prototype/image-service.mjs";
 import { chatEndpoint } from "./chat-service.mjs";
 import { text, now, messageHash } from "./store.mjs";
 
+const stopped = () => new ServiceError(504, "朗读已停止或超时，结果未知，服务可能已处理并计费；没有自动重试，文字回复已保留。");
+const recordingFailed = () => new ServiceError(503, "朗读请求可能已经处理，但本机未能保存结果状态；文字回复已保留，请先检查服务端记录，不要立即重试。");
+
 export async function synthesize(connection, input, { signal, fetchImpl = fetch } = {}) {
   const url = new URL(chatEndpoint(connection.baseUrl));
   url.pathname = url.pathname.replace(/\/chat\/completions$/, "/audio/speech");
@@ -35,6 +38,14 @@ export async function synthesize(connection, input, { signal, fetchImpl = fetch 
   }
 }
 
+export function validateSpeechConnection(input) {
+  chatEndpoint(input.baseUrl);
+  const model = text(input.model, "朗读模型", 150), voice = text(input.voice, "声音名称", 150);
+  const apiKey = text(input.apiKey || "", "朗读密钥", 4096, true);
+  if (/[\r\n]/.test(apiKey) || typeof input.auto !== "boolean" || !Number.isInteger(input.dailyLimit) || input.dailyLimit < 1 || input.dailyLimit > 100) throw new ServiceError(400, "朗读设置无效，每日上限需要为 1 到 100 次。");
+  return { baseUrl: input.baseUrl, model, voice, apiKey, auto: input.auto, dailyLimit: input.dailyLimit };
+}
+
 export class SpeechService {
   constructor(store, { synthesis = synthesize, timeoutMs = 60_000 } = {}) {
     this.store = store;
@@ -46,19 +57,18 @@ export class SpeechService {
   }
   configure(input) {
     if (this.active) throw new ServiceError(409, "请先停止正在进行的朗读。");
-    chatEndpoint(input.baseUrl);
-    const model = text(input.model, "朗读模型", 150), voice = text(input.voice, "声音名称", 150);
-    const apiKey = text(input.apiKey || "", "朗读密钥", 4096, true);
-    if (/[\r\n]/.test(apiKey) || typeof input.auto !== "boolean" || !Number.isInteger(input.dailyLimit) || input.dailyLimit < 1 || input.dailyLimit > 100) throw new ServiceError(400, "朗读设置无效，每日上限需要为 1 到 100 次。");
-    this.connection = { baseUrl: input.baseUrl, model, voice, apiKey, auto: input.auto, dailyLimit: input.dailyLimit };
+    this.connection = validateSpeechConnection(input);
     return this.status();
   }
   status() {
     const { baseUrl = "", model = "", voice = "", auto = false, dailyLimit = 20 } = this.connection || {};
-    return { configured: !!this.connection, busy: !!this.active, baseUrl, model, voice, auto, dailyLimit };
+    return { configured: !!this.connection, busy: !!this.active, baseUrl, model, voice, auto, dailyLimit, historyId: this.store.restoreVersion };
   }
   cancel() { this.active?.abort(); }
-  async speak({ id, automatic = false, test = false }) {
+  async speak(input = {}) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new ServiceError(400, "朗读请求无效。");
+    const { id, automatic = false, test = false } = input;
+    if (typeof automatic !== "boolean" || typeof test !== "boolean" || (automatic && test)) throw new ServiceError(400, "朗读请求开关无效。");
     if (!this.connection) throw new ServiceError(400, "请先配置独立的朗读服务。");
     if (this.active) throw new ServiceError(409, "已有朗读请求正在处理。");
     if (automatic && !this.connection.auto) throw new ServiceError(400, "自动朗读未开启。");
@@ -74,23 +84,48 @@ export class SpeechService {
     if ((this.store.state.usage?.[day]?.speech || 0) >= this.connection.dailyLimit) throw new ServiceError(429, "已达到今天的朗读请求上限，文字聊天不受影响。");
     const controller = new AbortController();
     this.active = controller;
-    if (automatic) this.attempted.add(id);
+    const identityId = this.store.state.identity.id;
+    const historyId = this.store.restoreVersion;
     const sourceHash = message && messageHash(message);
     const call = { id: randomUUID(), kind: "speech", model: this.connection.model, endpoint: new URL(this.connection.baseUrl).origin, at: now(), day, status: "pending" };
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    this.store.mutate((state) => {
-      state.calls.push(call); state.calls = state.calls.slice(-500);
-      state.usage[day] ||= {}; state.usage[day].speech = (state.usage[day].speech || 0) + 1;
-    });
+    const finish = (status) => {
+      if (this.store.state.identity.id !== identityId || this.store.restoreVersion !== historyId ||
+          !this.store.state.calls.some((item) => item.id === call.id)) return;
+      this.store.mutate((state) => { state.calls.find((item) => item.id === call.id).status = status; });
+    };
+    let recorded = false, recordingResult = false;
     try {
+      this.store.mutate((state) => {
+        state.calls.push(call); state.calls = state.calls.slice(-500);
+        state.usage ||= {};
+        state.usage[day] ||= {}; state.usage[day].speech = (state.usage[day].speech || 0) + 1;
+        const days = Object.keys(state.usage).sort();
+        for (const old of days.slice(0, Math.max(0, days.length - 40))) delete state.usage[old];
+      });
+      recorded = true;
+      if (automatic) this.attempted.add(id);
       const result = await this.synthesis(this.connection, content, { signal: controller.signal });
+      if (controller.signal.aborted) throw stopped();
       const current = message && this.store.state.messages.find((m) => m.id === id);
-      if (controller.signal.aborted || (message && (!current || current.deleted || current.conflicted || messageHash(current) !== sourceHash))) throw new ServiceError(409, "来源回复已经改变，旧音频未播放。");
-      this.store.mutate((state) => { const item = state.calls.find((c) => c.id === call.id); if (item) item.status = "completed"; });
+      if (this.store.state.identity.id !== identityId || this.store.restoreVersion !== historyId ||
+          (message && (!current || current.deleted || current.conflicted || current.status !== "completed" || messageHash(current) !== sourceHash))) {
+        throw new ServiceError(409, "伴侣或来源回复已经改变，旧音频未播放。");
+      }
+      recordingResult = true;
+      finish("completed");
       return result;
     } catch (error) {
-      this.store.mutate((state) => { const item = state.calls.find((c) => c.id === call.id); if (item) item.status = controller.signal.aborted ? "unknown" : "failed"; });
+      if (!recorded) throw new ServiceError(503, "本机未能保存朗读调用记录，未向服务提交请求；文字回复已保留，请检查本机存储后再试。");
+      const interrupted = controller.signal.aborted || error?.status === 504 || ["AbortError", "TimeoutError"].includes(error?.name);
+      try { finish(interrupted || recordingResult ? "unknown" : "failed"); }
+      catch { throw recordingFailed(); }
+      if (recordingResult) throw recordingFailed();
+      if (interrupted) throw stopped();
       throw error instanceof ServiceError ? error : new ServiceError(502, "朗读未完成，文字回复已保留。");
-    } finally { clearTimeout(timer); this.active = null; }
+    } finally {
+      clearTimeout(timer);
+      if (this.active === controller) this.active = null;
+    }
   }
 }

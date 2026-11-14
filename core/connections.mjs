@@ -1,6 +1,8 @@
 import { ServiceError, validateImageConnection } from "../prototype/image-service.mjs";
 import { CREDENTIAL_SLOTS } from "./credential-vault.mjs";
 import { randomUUID } from "node:crypto";
+import { validateConnection } from "./chat-service.mjs";
+import { validateSpeechConnection } from "./speech-service.mjs";
 
 function sameEndpoint(left, right) {
   try { return new URL(left).href.replace(/\/+$/, "") === new URL(right).href.replace(/\/+$/, ""); }
@@ -15,6 +17,7 @@ export class Connections {
     this.current = new Map();
     this.versions = new Map();
     this.changing = false;
+    this.pendingPairWrites = 0;
     this.warnings = [];
   }
   status() {
@@ -55,6 +58,13 @@ export class Connections {
     if (kind === "image") return validateImageConnection(data);
     return this.services[kind].configure(data);
   }
+  prepare(kind, data) {
+    if (kind === "image") return validateImageConnection(data);
+    if (kind === "chat") return validateConnection(data);
+    if (kind === "speech") return validateSpeechConnection(data);
+    const { connection, auto } = this.services.sync.prepareConfiguration(data);
+    return { baseUrl: connection.baseUrl, username: data.username || "", password: data.password || "", auto };
+  }
   async configure(kind, input) {
     this.assertReady();
     if (!["chat", "image", "speech", "sync"].includes(kind) || !input || typeof input !== "object") throw new ServiceError(400, "服务配置无效。");
@@ -71,34 +81,26 @@ export class Connections {
           (kind === "sync" && previous.username !== input.username)) throw new ServiceError(400, "服务地址或账号已改变，请重新填写密钥；不会把旧密钥转发到新地址。");
       data[field] = previous[field] || "";
     }
+    const prepared = this.prepare(kind, data);
     this.changing = true;
-    const service = this.services[kind];
-    const priorConnection = service?.connection;
-    const priorAuto = service?.auto;
-    const priorCapabilities = service?.capabilities;
     try {
-      const normalized = this.apply(kind, data);
-      if (kind === "image") Object.assign(data, normalized);
-      if (kind === "sync") data.auto = service.auto;
-      if (remember) await this.vault.write(kind, data);
-      else await this.vault?.remove(kind);
-      this.current.set(kind, data);
+      if (remember) await this.vault.write(kind, prepared);
+      else if (this.vault?.storageReady !== false) await this.vault?.remove(kind);
+      this.apply(kind, prepared);
+      this.current.set(kind, prepared);
       this.versions.set(kind, randomUUID());
       return this.status();
-    } catch (error) {
-      if (service) {
-        service.connection = priorConnection;
-        if (kind === "sync") { service.auto = priorAuto; service.capabilities = priorCapabilities; }
-      }
-      throw error;
     } finally { this.changing = false; }
   }
   async rememberPair(remember) {
     if (typeof remember !== "boolean") throw new ServiceError(400, "配对码保存设置无效。");
-    if (remember) {
-      if (!this.vault?.available) throw new ServiceError(503, "当前不能安全保存配对码，请单独保管并在需要时解锁。");
-      await this.vault.write("pair", this.services.sync.exportPair());
-    } else await this.vault?.remove("pair");
+    this.pendingPairWrites++;
+    try {
+      if (remember) {
+        if (!this.vault?.available) throw new ServiceError(503, "当前不能安全保存配对码，请单独保管并在需要时解锁。");
+        await this.vault.write("pair", this.services.sync.exportPair());
+      } else await this.vault?.remove("pair");
+    } finally { this.pendingPairWrites--; }
   }
   checkRotationInput(input) {
     this.assertReady();

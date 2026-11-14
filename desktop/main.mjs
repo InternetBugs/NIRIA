@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, dialog, safeStorage } from "electron";
+import { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, screen, session, dialog, safeStorage, powerMonitor } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
@@ -112,7 +112,7 @@ function trayIcon() {
   return nativeImage.createFromBitmap(pixels, { width: size, height: size }).resize({ width: 20, height: 20 });
 }
 async function start() {
-  layout = new WindowLayout(new DesktopPreferences(join(app.getPath("userData"), "desktop.json")), screen, desktopChanged);
+  layout = new WindowLayout(new DesktopPreferences(join(app.getPath("userData"), "desktop.json")), screen, desktopChanged, powerMonitor);
   store = new CompanionStore(join(app.getPath("userData"), "companion.sqlite"));
   vault = new CredentialVault(join(app.getPath("userData"), "credentials.sqlite"), {
     available: () => process.platform === "win32" ? safeStorage.isAsyncEncryptionAvailable() : Promise.resolve(false),
@@ -220,6 +220,16 @@ async function start() {
       return;
     }
     if (phase.startsWith("credential-")) {
+      if (phase.startsWith("credential-corrupt")) {
+        const { verifyCredentialFallback } = await import("./credential-safety-smoke.mjs");
+        const checks = await verifyCredentialFallback((code) => mainWindow.webContents.executeJavaScript(code));
+        await writeFile(process.env.NIRIA_SMOKE_RESULT, JSON.stringify({
+          ok: Object.values(checks).every(Boolean) && !smokeErrors.length, phase, ...checks,
+          protectedStorage: vault.available, errors: smokeErrors
+        }, null, 2));
+        app.quit();
+        return;
+      }
       const key = "niria-isolated-vault-test-key";
       const codeIsSecret = (bytes) => !bytes.includes(Buffer.from(key));
       let ok = false;
@@ -319,6 +329,18 @@ async function start() {
     const regenerationChecks = await verifyRegeneration({ store, companion, evaluate: (code) => mainWindow.webContents.executeJavaScript(code) });
     const { verifyCare } = await import("./care-smoke.mjs");
     const careChecks = await verifyCare({ store, companion, evaluate: (code) => mainWindow.webContents.executeJavaScript(code) });
+    const { verifyChatFaults } = await import("./chat-fault-smoke.mjs");
+    const chatFaultChecks = await verifyChatFaults({ store, companion,
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href) });
+    const { verifySyncSafety } = await import("./sync-safety-smoke.mjs");
+    const syncSafetyChecks = await verifySyncSafety({ store, sync: synchronization, connections: server.connections,
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href), davBaseUrl: process.env.NIRIA_SMOKE_DAV });
+    const { verifyBackupSafety } = await import("./backup-safety-smoke.mjs");
+    const backupSafetyChecks = await verifyBackupSafety({
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href) });
     const { verifyLive2D } = await import("./live2d-smoke.mjs");
     const live2dChecks = await verifyLive2D({ store, evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
       widgetEvaluate: (code) => widget.webContents.executeJavaScript(code) });
@@ -330,6 +352,19 @@ async function start() {
       return editor;
     } });
     const backgroundFailures = await verifyBackgroundFailures((code) => mainWindow.webContents.executeJavaScript(code));
+    const { verifyAvatarSafety } = await import("./avatar-safety-smoke.mjs");
+    const avatarSafetyChecks = await verifyAvatarSafety({ store,
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href) });
+    const { verifyImageGeneration } = await import("./image-generation-smoke.mjs");
+    const imageCallChecks = await verifyImageGeneration({ store,
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href) });
+    const { verifySpeechSafety } = await import("./speech-safety-smoke.mjs");
+    const speechSafetyChecks = await verifySpeechSafety({ store,
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href),
+      capture: async () => { await writeFile(join(dirname(process.env.NIRIA_SMOKE_SCREENSHOT), "speech-waiting-desktop.png"), (await mainWindow.webContents.capturePage()).toPNG()); } });
     const { verifyFrameRendering } = await import("./render-smoke.mjs");
     const renderChecks = await verifyFrameRendering((code) => mainWindow.webContents.executeJavaScript(code));
     const imageTools = await mainWindow.webContents.executeJavaScript(`(async () => {
@@ -355,14 +390,21 @@ async function start() {
       Object.values(contextChecks).every(Boolean) &&
       Object.values(regenerationChecks).every(Boolean) &&
       Object.values(careChecks).every(Boolean) &&
+      Object.values(chatFaultChecks).every(Boolean) &&
+      Object.values(syncSafetyChecks).every(Boolean) &&
+      Object.values(backupSafetyChecks).every(Boolean) &&
       Object.values(live2dChecks).every(Boolean) &&
       Object.values(backgroundChecks).every(Boolean) &&
       Object.values(backgroundFailures).every(Boolean) &&
+      Object.values(avatarSafetyChecks).every(Boolean) &&
+      Object.values(imageCallChecks).every(Boolean) &&
+      Object.values(speechSafetyChecks).every(Boolean) &&
       Object.values(renderChecks).every(Boolean) && !smokeErrors.length,
       identity, bridge, nodeAbsent, nativeWindow, transparentCorner, collapseWorks, collapsedBounds, expandWorks,
       expressionDisplays, expressionClears, nativeExpressionClearsSilhouette, nativeOriginalRestored, cleanReply, oneChatCall,
-      ...imageTools, ...historyChecks, ...memoryChecks, ...memoryBrowseChecks, ...contextChecks, ...regenerationChecks, ...careChecks, ...live2dChecks,
-      ...backgroundChecks, ...backgroundFailures, ...renderChecks, contextSyntheticCalls: 4, regenerationSyntheticCalls: 3, careSyntheticCalls: 4, errors: smokeErrors };
+      ...imageTools, ...historyChecks, ...memoryChecks, ...memoryBrowseChecks, ...contextChecks, ...regenerationChecks, ...careChecks, ...chatFaultChecks, ...syncSafetyChecks, ...backupSafetyChecks, ...live2dChecks,
+      ...backgroundChecks, ...backgroundFailures, ...avatarSafetyChecks, ...imageCallChecks, ...speechSafetyChecks, ...renderChecks,
+      contextSyntheticCalls: 4, regenerationSyntheticCalls: 3, careSyntheticCalls: 4, chatFaultSyntheticCalls: 7, imageLocalRequests: 3, speechLocalRequests: 6, errors: smokeErrors };
     await writeFile(process.env.NIRIA_SMOKE_RESULT, JSON.stringify(result, null, 2));
     app.quit();
   }

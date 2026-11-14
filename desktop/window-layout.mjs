@@ -1,5 +1,10 @@
 import { mainPlacement, widgetPlacement } from "./window-state.mjs";
 
+const near = (actual, desired) => ["x", "y", "width", "height"].every((key) => Math.abs(actual[key] - desired[key]) <= 1);
+function setMinimumSize(window, width, height) {
+  const [currentWidth, currentHeight] = window.getMinimumSize();
+  if (currentWidth !== width || currentHeight !== height) window.setMinimumSize(width, height);
+}
 export function stableBounds(actual, previous) {
   // A one-DIP native rounding difference must not accumulate across restarts.
   return Object.fromEntries(["x", "y", "width", "height"].map((key) =>
@@ -7,17 +12,21 @@ export function stableBounds(actual, previous) {
 }
 // Native coordinates are Electron's logical pixels, including negative monitor origins.
 export class WindowLayout {
-  constructor(preferences, screen, changed = () => {}) {
+  constructor(preferences, screen, changed = () => {}, powerMonitor) {
     this.preferences = preferences;
     this.screen = screen;
+    this.powerMonitor = powerMonitor;
     this.changed = changed;
     preferences.onWarning = () => { if (!this.stopped) this.changed(); };
     this.stopped = false;
+    this.recovering = false;
     this.displayChanged = () => {
+      if (this.stopped) return;
       clearTimeout(this.displayTimer);
       this.displayTimer = setTimeout(() => this.recover(), 180);
     };
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) screen.on(event, this.displayChanged);
+    powerMonitor?.on("resume", this.displayChanged);
   }
   areas(cursor = false) {
     const preferred = cursor ? this.screen.getDisplayNearestPoint(this.screen.getCursorScreenPoint()) : this.screen.getPrimaryDisplay();
@@ -37,17 +46,18 @@ export class WindowLayout {
     const capture = () => this.captureMain();
     for (const event of ["move", "resize", "maximize", "unmaximize"]) window.on(event, capture);
     window.on("restore", () => this.recover());
+    window.on("leave-full-screen", this.displayChanged);
     if (this.preferences.state.main.maximized) window.maximize();
   }
   captureMain() {
     const window = this.main;
-    if (this.stopped || !window || window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return;
+    if (this.stopped || this.recovering || !window || window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return;
     this.preferences.update("main", { bounds: stableBounds(window.getNormalBounds(), this.preferences.state.main.bounds), maximized: window.isMaximized() });
   }
   attachWidget(window) {
     this.widget = window;
     const capture = () => {
-      if (!this.stopped && !window.isDestroyed() && !window.isMinimized()) {
+      if (!this.stopped && !this.recovering && !window.isDestroyed() && !window.isMinimized()) {
         this.preferences.update("widget", { bounds: stableBounds(window.getBounds(), this.preferences.state.widget.bounds) });
       }
     };
@@ -102,29 +112,44 @@ export class WindowLayout {
     this.preferences.update("widget", { bounds: this.widget.getBounds() });
   }
   recover() {
-    if (this.stopped) return;
-    const main = this.main;
-    if (main && !main.isDestroyed() && !main.isMinimized()) {
-      const placement = mainPlacement(main.getNormalBounds(), this.areas());
-      const maximized = main.isMaximized();
-      if (maximized) main.unmaximize();
-      main.setMinimumSize(placement.minWidth, placement.minHeight);
-      main.setBounds(placement.bounds);
-      if (maximized) main.maximize();
-      this.captureMain();
-    }
-    if (this.widget && !this.widget.isDestroyed()) {
-      const bounds = widgetPlacement(this.widget.getBounds(), this.preferences.state.widget.collapsed, this.areas());
-      this.widget.setMinimumSize(Math.min(92, bounds.width), Math.min(92, bounds.height));
-      this.widget.setBounds(bounds);
-      this.preferences.update("widget", { bounds: this.widget.getBounds() });
-    }
+    if (this.stopped || this.recovering) return;
+    this.recovering = true;
+    let widgetBounds;
+    try {
+      const main = this.main;
+      if (main && !main.isDestroyed() && !main.isMinimized() && !main.isFullScreen()) {
+        const current = main.getNormalBounds(), placement = mainPlacement(current, this.areas());
+        if (near(current, placement.bounds)) {
+          setMinimumSize(main, placement.minWidth, placement.minHeight);
+        } else {
+          const maximized = main.isMaximized();
+          try {
+            if (maximized) main.unmaximize();
+            setMinimumSize(main, placement.minWidth, placement.minHeight);
+            main.setBounds(placement.bounds);
+          } finally {
+            if (maximized && !main.isDestroyed()) main.maximize();
+          }
+        }
+      }
+      if (this.widget && !this.widget.isDestroyed() && !this.widget.isMinimized()) {
+        const current = this.widget.getBounds();
+        const bounds = widgetPlacement(current, this.preferences.state.widget.collapsed, this.areas());
+        setMinimumSize(this.widget, Math.min(92, bounds.width), Math.min(92, bounds.height));
+        if (!near(current, bounds)) this.widget.setBounds(bounds);
+        widgetBounds = this.widget.getBounds();
+      }
+    } finally { this.recovering = false; }
+    this.captureMain();
+    if (widgetBounds) this.preferences.update("widget", { bounds: stableBounds(widgetBounds, this.preferences.state.widget.bounds) });
   }
   stop() {
     this.captureMain();
     this.stopped = true;
     clearTimeout(this.displayTimer);
     for (const event of ["display-added", "display-removed", "display-metrics-changed"]) this.screen.removeListener(event, this.displayChanged);
+    this.powerMonitor?.removeListener("resume", this.displayChanged);
+    this.main?.removeListener("leave-full-screen", this.displayChanged);
     this.preferences.flush();
   }
 }

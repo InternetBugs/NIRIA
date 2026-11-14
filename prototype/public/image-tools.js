@@ -111,18 +111,32 @@ function field(image) {
   drawContained(context, image, 96, 144);
   return edgeField(context.getImageData(0, 0, 96, 144));
 }
-export async function compareFrames(referenceImage, targetImage) {
+export async function compareFrames(referenceImage, targetImage, { signal } = {}) {
+  signal = pageChecks ? AbortSignal.any([pageChecks.signal, ...(signal ? [signal] : [])]) : signal;
+  signal?.throwIfAborted();
   const reference = field(referenceImage), target = field(targetImage);
   let comparison;
   if (typeof Worker === "undefined") comparison = findAlignment(reference, target);
   else comparison = await new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./image-worker.js", import.meta.url), { type: "module" });
-    const timer = setTimeout(() => { worker.terminate(); reject(new Error("位置比较超时，仍可对照原图决定是否采用。")); }, 15_000);
-    const finish = (callback, value) => { clearTimeout(timer); worker.terminate(); callback(value); };
+    let finished = false;
+    const finish = (callback, value) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer); worker.terminate();
+      signal?.removeEventListener("abort", abort);
+      callback(value);
+    };
+    const abort = () => finish(reject, signal.reason || new DOMException("位置比较已取消。", "AbortError"));
+    const timer = setTimeout(() => finish(reject, new Error("位置比较超时，仍可对照原图决定是否采用。")), 15_000);
+    signal?.addEventListener("abort", abort, { once: true });
     worker.onmessage = ({ data }) => data.error ? finish(reject, new Error(data.error)) : finish(resolve, data.result);
     worker.onerror = () => finish(reject, new Error("位置比较不可用，仍可人工对照后采用。"));
-    worker.postMessage({ reference, target });
+    if (signal?.aborted) return abort();
+    try { worker.postMessage({ reference, target }); }
+    catch { finish(reject, new Error("位置比较无法启动，仍可人工对照后采用。")); }
   });
+  signal?.throwIfAborted();
   return { ...comparison, x: comparison.x * WIDTH / 96, y: comparison.y * HEIGHT / 144 };
 }
 export function overlayFrames(reference, target) {

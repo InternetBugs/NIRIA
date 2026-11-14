@@ -56,7 +56,7 @@ test("draft preview and real send select the same relevant old memory without ad
   assert.deepEqual(refs.map((r) => r.id), preview.refs.memoryRefs.map((r) => r.id));
   assert.equal(calls, 1);
 });
-test("warm term cache honors content corrections, permission withdrawal, expiry and changed message provenance", (t) => {
+test("warm recall index honors content corrections, permission withdrawal, expiry and changed message provenance", (t) => {
   const store = storeFor(t);
   const user = store.addUser("栗子生日在三月");
   const id = store.addMemory({ content: "栗子生日在三月", sources: [{ id: user.id, revision: 1 }] });

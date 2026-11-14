@@ -8,29 +8,36 @@ import { memoryBrowser } from "./memory-browser.js";
 import { contextReview } from "./context-review.js";
 import { chatActivity } from "./chat-activity.js";
 import { live2DDialog } from "./live2d-dialog.js";
+import { backupControls } from "./backup-controls.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = { token: "", data: null, busy: false, view: "chat", edit: null };
 let noticeTimer;
 let audioURL = null;
 let speechBusy = false;
+let speechTask = null;
 let seenReplies = null;
+let seenIdentity = null;
 let playingMessage = null;
+let leaving = false;
 let refreshing, refreshAgain = false, refreshAssets = false;
 let avatarImport = 0;
 let avatarController;
+let avatarImportBasis;
 function beginAvatarImport() {
   avatarController?.abort(); avatarController = new AbortController();
+  avatarImportBasis = state.data ? { identityId: state.data.identity.id, expectedAvatarKey: state.data.avatarKey } : null;
   return ++avatarImport;
 }
 let avatarWrite = Promise.resolve();
 let draftRevision = 0;
 const activity = chatActivity({ api });
 const interact = () => { if (state.token) activity.changed(); };
-window.addEventListener("pagehide", () => { activity.stop(); avatarController?.abort(); ++avatarImport; }, { once: true });
+window.addEventListener("pagehide", () => { leaving = true; activity.stop(); stopAudio(); avatarController?.abort(); ++avatarImport; }, { once: true });
 const contexts = contextReview({ api, refresh, data: () => state.data, draft: () => $("#message-input").value });
 const live2d = live2DDialog({ api, refresh, notice, data: () => state.data, beforeOpen: beginAvatarImport });
 const renderSecurity = syncSecurity({ api, refresh, notice });
+const renderBackup = backupControls({ api, refresh, data: () => state.data, notice, download, beforeRestore: stopAudio });
 const history = chatHistory({ api, refresh, renderMessage });
 const memories = memoryBrowser({ api, refresh, renderMemory });
 const forgetting = forgetReview({ api, refresh, notice, stopAudio, openHistory: (id) => history.open(id), data: () => state.data });
@@ -44,6 +51,11 @@ function notice(message, error = false) {
   $("#notice").hidden = false;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => { $("#notice").hidden = true; }, error ? 12000 : 6500);
+}
+function connectionNotice(message) {
+  const storage = state.data?.connections?.storage;
+  const warning = storage?.savedKnown === false ? storage.warning : "";
+  notice(warning ? `${message} ${warning}` : message, !!warning);
 }
 function element(tag, className, content) {
   const node = document.createElement(tag);
@@ -290,12 +302,14 @@ function renderCalls() {
   area.replaceChildren();
   for (const call of state.data.calls.slice(-30).toReversed()) {
     const item = element("div", "call-item");
-    const info = element("span", "", `${{ chat: "聊天", memory: "记忆整理", care: "主动关心", test: "连接测试", speech: "语音朗读" }[call.kind] || call.kind} · ${dateLabel(call.at)}`);
+    const label = call.kind === "image" ? `图片生成 · ${{ blink: "闭眼", smile: "微笑", curious: "疑惑", shy: "害羞" }[call.action] || "动作"}`
+      : { chat: "聊天", memory: "记忆整理", care: "主动关心", test: "连接测试", speech: "语音朗读" }[call.kind] || call.kind;
+    const info = element("span", "", `${label} · ${dateLabel(call.at)}`);
     info.append(element("small", "", `${call.model} · ${call.endpoint}`));
     item.append(info, element("span", "", { pending: "处理中", completed: "已返回", failed: "失败", unknown: "结果未知" }[call.status]));
     area.append(item);
   }
-  if (!area.children.length) area.append(element("p", "hint", "尚未调用对话服务。"));
+  if (!area.children.length) area.append(element("p", "hint", "尚未调用服务。"));
 }
 function render() {
   const { identity, settings, service } = state.data;
@@ -315,11 +329,15 @@ function render() {
   forgetting.update();
   renderCalls();
   renderSync();
+  renderBackup(state.data.backup);
   const credentials = state.data.connections;
   $("#credential-status").textContent = credentials?.storage.warning ||
     (credentials?.storage.available ? `Windows 安全存储可用。已保存：${credentials.storage.saved.map((s) => ({ chat: "对话", image: "图片", speech: "朗读", sync: "WebDAV", pair: "配对码" }[s])).join("、") || "暂无"}。` : "当前不支持安全保存，仅本次会话使用。");
   $("#forget-credentials").disabled = !credentials?.storage.saved.length;
-  if (playingMessage && playingMessage.revision !== state.data.messageWindow?.revision) stopAudio();
+  if (playingMessage && (playingMessage.identityId !== state.data.identity.id || playingMessage.historyId !== state.data.speech?.historyId || playingMessage.revision !== state.data.messageWindow?.revision)) stopAudio();
+  if (speechTask && (speechTask.identityId !== state.data.identity.id || speechTask.historyId !== state.data.speech?.historyId || speechTask.revision !== state.data.messageWindow?.revision)) stopAudio();
+  const speechHistory = JSON.stringify([state.data.identity.id, state.data.speech?.historyId]);
+  if (seenIdentity !== speechHistory) { seenIdentity = speechHistory; seenReplies = null; }
   const replies = state.data.messages.filter((m) => m.role === "assistant" && !m.deleted && m.status === "completed");
   const newReply = seenReplies && replies.findLast((m) => !seenReplies.has(m.id));
   seenReplies ||= new Set();
@@ -377,7 +395,7 @@ $("#composer").addEventListener("submit", (event) => {
 $("#stop-chat").addEventListener("click", () => api("/api/cancel", {}).catch((e) => notice(e.message, true)));
 $("#connection-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  try { await configure(); $("#settings-dialog").close(); notice("对话连接已应用。下一条消息会使用这个模型。"); } catch (e) { notice(e.message, true); }
+  try { await configure(); $("#settings-dialog").close(); connectionNotice("对话连接已应用。下一条消息会使用这个模型。"); } catch (e) { notice(e.message, true); }
 });
 $("#test-connection").addEventListener("click", async () => {
   const button = $("#test-connection"); if (button.disabled) return; button.disabled = true;
@@ -425,21 +443,6 @@ $("#edit-form").addEventListener("submit", async (event) => {
   } catch (e) { notice(e.message, true); }
 });
 $("#preview-context").addEventListener("click", () => contexts.draft());
-$("#export-backup").addEventListener("click", async () => {
-  const button = $("#export-backup"); if (button.disabled) return; button.disabled = true;
-  try { download(await api("/api/backup/export", { password: $("#backup-password").value }), `niria-${new Date().toISOString().slice(0, 10)}.niria`); $("#backup-password").value = ""; notice("加密备份已导出，请单独保管口令。"); }
-  catch (e) { notice(e.message, true); } finally { button.disabled = false; }
-});
-$("#restore-backup").addEventListener("change", async (event) => {
-  const file = event.target.files[0]; event.target.value = ""; if (!file) return;
-  try {
-    if (file.size > 100 * 1024 * 1024) throw new Error("备份超过当前 100 MB 上限。");
-    if (!confirm("恢复将替换本机的伴侣、聊天、记忆和形象。请先导出当前资料。确定恢复吗？")) return;
-    const backup = JSON.parse(await file.text());
-    await api("/api/backup/restore", { backup, password: $("#backup-password").value });
-    $("#backup-password").value = ""; $("#settings-dialog").close(); await refresh(true); notice("伴侣与共同记忆已恢复。");
-  } catch (e) { notice(e.message, true); }
-});
 $("#avatar-package").addEventListener("change", async (event) => {
   const file = event.target.files[0]; event.target.value = ""; if (!file) return;
   const operation = beginAvatarImport();
@@ -456,9 +459,18 @@ $("#avatar-package").addEventListener("change", async (event) => {
   } catch (e) { if (operation === avatarImport) notice(e.message, true); }
 });
 function saveImportedAvatar(avatar, operation) {
+  const basis = avatarImportBasis;
   const task = avatarWrite.then(async () => {
     if (operation !== avatarImport) return false;
-    await mutate("/api/avatar", avatar);
+    const expected = { ...basis };
+    stopAudio();
+    const accepted = await api("/api/avatar", { avatar, ...expected });
+    // A newer selection may be waiting behind this window's own in-flight
+    // write. Advance only that matching basis, never an unrelated remote edit.
+    if (avatarImportBasis?.identityId === expected.identityId && avatarImportBasis.expectedAvatarKey === expected.expectedAvatarKey) {
+      avatarImportBasis.expectedAvatarKey = accepted.avatarKey;
+    }
+    await refresh(true);
     return true;
   });
   avatarWrite = task.catch(() => {});
@@ -486,8 +498,10 @@ if (window.niriaDesktop) {
   $("#show-widget").addEventListener("click", () => window.niriaDesktop.showWidget());
 }
 function stopAudio() {
+  speechTask?.controller.abort();
   $("#speech-audio").pause();
   $("#speech-audio").removeAttribute("src");
+  $("#speech-audio").hidden = true;
   if (audioURL) URL.revokeObjectURL(audioURL);
   audioURL = null;
   playingMessage = null;
@@ -497,16 +511,40 @@ async function speak(input) {
   if (speechBusy) return;
   stopAudio();
   speechBusy = true;
+  const task = { controller: new AbortController(), identityId: state.data.identity.id,
+    revision: state.data.messageWindow?.revision, historyId: state.data.speech?.historyId, awaiting: true };
+  speechTask = task;
+  $("#speech-status").textContent = "正在等待合成声音 · 1 次朗读请求，停止后仍可能已计费";
+  $("#speech-stop").textContent = "停止等待朗读";
+  $("#speech-player").hidden = false;
+  $("#speech-player").setAttribute("aria-busy", "true");
   try {
-    const result = await api("/api/speech/speak", input);
-    playingMessage = input.id ? { id: input.id, revision: state.data.messageWindow?.revision } : null;
+    const result = await api("/api/speech/speak", input, { signal: task.controller.signal });
+    if (task.controller.signal.aborted) return;
+    await refresh();
+    if (task.controller.signal.aborted || speechTask !== task) return;
+    playingMessage = { id: input.id || null, identityId: task.identityId, historyId: task.historyId, revision: task.revision };
     const bytes = Uint8Array.from(atob(result.audio), (c) => c.charCodeAt(0));
     audioURL = URL.createObjectURL(new Blob([bytes], { type: result.mime }));
     $("#speech-audio").src = audioURL;
+    $("#speech-audio").hidden = false;
+    $("#speech-status").textContent = "合成声音 · 由你选择的朗读服务生成";
+    $("#speech-stop").textContent = "停止朗读";
+    task.awaiting = false;
     $("#speech-player").hidden = false;
     try { await $("#speech-audio").play(); }
-    catch { notice("音频已就绪，点击播放器开始播放。"); }
-  } finally { speechBusy = false; await refresh(); }
+    catch { if (!task.controller.signal.aborted) notice("音频已就绪，点击播放器开始播放。"); }
+  } catch (error) {
+    const cancelled = task.controller.signal.aborted;
+    if (speechTask === task) stopAudio();
+    if (!cancelled) throw error;
+  } finally {
+    if (speechTask === task) {
+      speechTask = null; speechBusy = false;
+      $("#speech-player").setAttribute("aria-busy", "false");
+    }
+    if (!leaving) await refresh();
+  }
 }
 async function configureSpeech() {
   await api("/api/speech/configure", {
@@ -519,7 +557,7 @@ async function configureSpeech() {
 }
 $("#speech-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  try { await configureSpeech(); $("#settings-dialog").close(); notice("朗读服务已配置，文字聊天继续使用独立的对话服务。"); }
+  try { await configureSpeech(); $("#settings-dialog").close(); connectionNotice("朗读服务已配置，文字聊天继续使用独立的对话服务。"); }
   catch (e) { notice(e.message, true); }
 });
 $("#speech-test").addEventListener("click", async () => {
@@ -532,7 +570,9 @@ $("#speech-test").addEventListener("click", async () => {
   finally { button.disabled = false; }
 });
 $("#speech-stop").addEventListener("click", () => {
-  stopAudio(); api("/api/speech/cancel", {}).catch((e) => notice(e.message, true));
+  const waiting = speechTask?.awaiting;
+  stopAudio();
+  if (waiting) notice("已停止等待朗读；服务可能已经处理并计费，请先检查调用记录，没有自动重试。");
 });
 function renderSync() {
   const sync = state.data.synchronization;
@@ -576,7 +616,7 @@ $("#sync-form").addEventListener("submit", async (event) => {
   try {
     await api("/api/sync/configure", { baseUrl: $("#sync-base").value, username: $("#sync-user").value, password: $("#sync-password").value, auto: $("#sync-auto").checked,
       reuseSecret: $("#sync-reuse").checked, remember: $("#sync-remember").checked });
-    $("#sync-password").value = ""; await refresh(); notice("同步连接已应用，尚未上传资料。");
+    $("#sync-password").value = ""; await refresh(); connectionNotice("同步连接已应用，尚未上传资料。");
   } catch (e) { notice(e.message, true); }
 });
 $("#sync-alert").addEventListener("click", () => {
@@ -610,7 +650,7 @@ try {
   await refresh(true);
   const restored = state.data.connections;
   const warnings = [...(restored?.warnings || [])];
-  if (restored?.storage.saved.length && restored.storage.warning) warnings.push(restored.storage.warning);
+  if ((restored?.storage.saved.length || restored?.storage.savedKnown === false) && restored.storage.warning) warnings.push(restored.storage.warning);
   if (warnings.length) notice(warnings.join(" "), true);
   watchState(state.token, refresh);
   setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 15_000);

@@ -4,6 +4,8 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { createPrototypeServer } from "../prototype/server.mjs";
 import { ServiceError } from "../prototype/image-service.mjs";
+const imageInput = { baseUrl: "https://images.example/v1", model: "server-test-image", action: "blink",
+  image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };
 
 async function start(t, options) {
   const server = createPrototypeServer(options);
@@ -15,7 +17,7 @@ async function start(t, options) {
   }));
   const base = `http://127.0.0.1:${server.address().port}`;
   const session = await (await fetch(`${base}/api/session`)).json();
-  const post = (body = "{}", extra = {}) => fetch(`${base}/api/generate`, {
+  const post = (body = JSON.stringify(imageInput), extra = {}) => fetch(`${base}/api/generate`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

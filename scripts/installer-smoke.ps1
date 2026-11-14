@@ -131,7 +131,7 @@ function Uninstall-Niria {
   foreach ($link in $niriaLinks) { Assert-Check (-not (Test-Path -LiteralPath $link)) 'Test shortcut remains' }
   Assert-Sentinel
   Assert-Check ((Get-FileHash -LiteralPath (Join-Path $niriaData 'companion.sqlite')).Hash -eq $before) 'Companion database changed during uninstall'
-  Add-Phase 'uninstall' @{ removedProgram = $true; removedRegistration = $true; removedShortcuts = $true; defaultDataSentinel = $true; isolatedDatabaseUnchanged = $true }
+  Add-Phase 'uninstall' @{ removedProgram = $true; removedRegistration = $true; removedShortcuts = $true; defaultDataSentinel = $true; isolatedDatabaseUnchanged = $true; databaseSha256 = $before }
 }
 
 try {
@@ -152,8 +152,12 @@ try {
   $installers = @(foreach ($version in @($niriaOldVersion, $niriaVersion)) {
     $installer = Join-Path $niriaWorkspace "release\NIRIA Setup $version.exe"
     Assert-Check (Test-Path -LiteralPath $installer) "Missing installer: $installer"
-    [ordered]@{ version = $version; file = $installer; bytes = (Get-Item -LiteralPath $installer).Length; sha256 = (Get-FileHash -LiteralPath $installer).Hash }
+    $integrity = & node --input-type=module -e 'import{readFileSync}from"node:fs";import{pathToFileURL}from"node:url";const{verifyNsisCrc}=await import(pathToFileURL(process.argv[1]));console.log(JSON.stringify(verifyNsisCrc(readFileSync(process.argv[2]))));' (Join-Path $niriaWorkspace 'scripts\nsis-integrity.mjs') $installer
+    Assert-Check ($LASTEXITCODE -eq 0) "Installer CRC verification failed: $version"
+    [ordered]@{ version = $version; file = $installer; bytes = (Get-Item -LiteralPath $installer).Length; sha256 = (Get-FileHash -LiteralPath $installer).Hash; integrity = ($integrity | ConvertFrom-Json) }
   })
+  $niriaReport.installers = $installers
+  $niriaReport.sentinel = $niriaSentinel
   if ($InspectOnly) {
     $plan = [ordered]@{
       inspectOnly = $true; systemChanges = $false; installers = $installers
@@ -216,7 +220,19 @@ try {
     Remove-Item -LiteralPath $niriaSentinel
   }
   if (Test-Path -LiteralPath $niriaRun) {
+    $niriaReport.cleanup = [ordered]@{
+      installationRemoved = -not (Test-Path -LiteralPath $niriaInstall)
+      registrationRemoved = @(Get-NiriaRegistration).Count -eq 0
+      shortcutsRemoved = @($niriaLinks | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0
+      sentinelRemoved = -not (Test-Path -LiteralPath $niriaSentinel)
+      applicationExited = @(Get-Process -Name NIRIA -ErrorAction SilentlyContinue).Count -eq 0
+    }
+    if ($niriaReport.ok -and @($niriaReport.cleanup.Values | Where-Object { $_ -ne $true }).Count -gt 0) {
+      $niriaReport.ok = $false
+      $niriaReport.error = 'Test system state was not fully cleaned up'
+    }
     $niriaReport | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $niriaRun 'result.json') -Encoding utf8
   }
 }
+Assert-Check $niriaReport.ok $niriaReport.error
 $niriaReport | ConvertTo-Json -Depth 100
