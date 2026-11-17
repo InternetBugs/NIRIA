@@ -25,6 +25,11 @@
       <div class="header-actions"><button id="sync-alert" class="button quiet" hidden>处理同步冲突</button><span class="local-badge"><i></i>保存在这台电脑</span><button id="show-widget" class="button quiet" hidden>伴侣小窗 ↗</button></div>
     </header>
     <p id="desktop-warning" class="desktop-warning" role="status" hidden></p>
+    <aside id="avatar-profile-offer" class="profile-offer" hidden>
+      <span>形象已导入，可以根据形象生成一份可编辑的人物资料。</span>
+      <button id="avatar-profile-create" class="button quiet" type="button">根据形象生成资料</button>
+      <button id="avatar-profile-later" class="text-button" type="button">稍后</button>
+    </aside>
     <div class="workspace">
       <section class="companion-stage" aria-label="你的伴侣">
         <div class="stage-top"><span class="stage-label">YOUR COMPANION</span><button id="edit-identity" class="text-button">编辑资料 ↗</button></div>
@@ -85,9 +90,18 @@
       <form id="connection-form">
         <p class="copy">使用你选择的 Chat Completions 服务。更换模型会延续同一位伴侣。</p>
         <label class="field">API 根地址<input id="chat-base" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" required></label>
-        <label class="field">模型名称<input id="chat-model" maxlength="150" placeholder="填写服务提供的模型名称" required></label>
         <label class="field">API 密钥<input id="chat-key" type="password" maxlength="4096" placeholder="本机免密服务可留空" autocomplete="off"></label>
         <label class="check"><input id="chat-reuse" type="checkbox">留空时继续使用当前密钥</label>
+        <div class="model-input-row">
+          <label class="field">模型名称<input id="chat-model" maxlength="150" placeholder="手动填写或从列表选择" required></label>
+          <button id="chat-models-fetch" type="button" class="button quiet" aria-controls="chat-models-panel">获取模型</button>
+        </div>
+        <div id="chat-models-panel" class="model-picker" hidden>
+          <label class="field">搜索模型<input id="chat-model-search" type="search" maxlength="150" placeholder="输入模型名关键词" autocomplete="off" aria-controls="chat-model-results"></label>
+          <div id="chat-model-results" class="model-results" role="group" aria-label="可选模型"></div>
+        </div>
+        <p id="chat-models-status" class="hint model-status" role="status" aria-live="polite"></p>
+        <p class="hint">获取当前服务的 /models 列表（根地址通常以 /v1 结尾）。模型是否支持对话以服务说明为准，也可直接填写名称。</p>
         <label class="check"><input id="chat-remember" type="checkbox">在此电脑安全记住对话配置</label>
         <p class="hint">记住配置使用 Windows 系统加密，默认关闭；不勾选时仅本次进程使用。更换服务地址需要重新填写密钥，或取消保留以连接免密服务。图片编辑单独配置。</p>
         <div class="dialog-actions"><button id="test-connection" type="button" class="button quiet">测试连接（1 次请求）</button><button type="submit" class="button primary">应用连接</button></div>
@@ -108,6 +122,13 @@
       </form>
     </section>
     <section data-settings="identity" hidden>
+      <div class="profile-tools">
+        <button id="identity-import-live2d" class="button quiet" type="button">导入 Live2D 形象</button>
+        <button id="identity-import-image" class="button quiet" type="button">导入图片形象</button>
+        <button id="profile-from-avatar" class="button quiet" type="button">根据形象生成资料</button>
+        <button id="profile-from-text" class="button quiet" type="button">从长文字整理资料</button>
+      </div>
+      <p class="hint">可以手动编辑，或让模型生成可修改的草稿。生成后须确认采用，才会更改下面的核心资料。</p>
       <form id="identity-form">
         <div class="two-columns"><label class="field">她的名字<input id="identity-name" maxlength="80" required></label><label class="field">她如何称呼你<input id="identity-user" maxlength="80" placeholder="你喜欢的称呼"></label></div>
         <label class="field">性格与背景<textarea id="identity-persona" rows="3" maxlength="4000" required></textarea></label>
@@ -231,6 +252,26 @@
     <canvas id="live2d-preview-canvas" width="512" height="768" aria-label="Live2D 模型预览" hidden></canvas>
     <label class="field">预览表情<select id="live2d-preview-expression" disabled><option value="neutral">原始表情</option></select></label>
     <div class="dialog-actions"><button class="button quiet" data-close="live2d-dialog">取消</button><button id="live2d-preview" class="button quiet" disabled>本机预览</button><button id="live2d-adopt" class="button primary" disabled>采用这个模型</button></div>
+  </dialog>
+  <dialog id="profile-dialog" class="profile-dialog" aria-labelledby="profile-title">
+    <div class="dialog-heading"><h2 id="profile-title">生成伴侣资料</h2><button class="close-button" data-close="profile-dialog" aria-label="关闭资料生成">×</button></div>
+    <label class="field">资料来源<select id="profile-source"><option value="text">从长文字整理</option><option value="avatar">根据当前形象生成</option></select></label>
+    <p id="profile-source-note" class="hint"></p>
+    <label class="field">人物描述（形象模式下可补充，也可留空）<textarea id="profile-description" rows="6" maxlength="20000" placeholder="粘贴一大段人物介绍、性格、背景、说话习惯或关系设定，模型会整理为资料草稿。"></textarea></label>
+    <p id="profile-image-note" class="hint" hidden>发送的是当前图片或 Live2D 形象的静态截图。模型不支持读图时，可以改用文字整理。</p>
+    <img id="profile-image" class="profile-image" alt="发送给模型的形象截图" hidden>
+    <div class="profile-tools"><button id="profile-generate" type="button" class="button quiet">生成资料草稿（1 次请求）</button><button id="profile-stop" type="button" class="button quiet" hidden>停止等待</button></div>
+    <p id="profile-status" class="hint" role="status" aria-live="polite"></p>
+    <form id="profile-form">
+      <fieldset id="profile-result" hidden>
+        <legend>检查和修改草稿</legend>
+        <label class="field">名字<input id="profile-name" maxlength="80" required></label>
+        <label class="field">性格与背景<textarea id="profile-persona" rows="5" maxlength="4000" required></textarea></label>
+        <label class="field">说话方式<textarea id="profile-style" rows="3" maxlength="2000" required></textarea></label>
+        <label class="field">目前的关系<textarea id="profile-relationship" rows="3" maxlength="2000" required></textarea></label>
+      </fieldset>
+    </form>
+    <div class="dialog-actions"><button type="button" class="button quiet" data-close="profile-dialog">取消</button><button id="profile-apply" type="button" class="button primary" disabled>确认采用资料</button></div>
   </dialog>
   <dialog id="context-dialog"><div class="dialog-heading"><h2>下一次发送范围</h2><button class="close-button" data-close="context-dialog" aria-label="关闭">×</button></div><div id="context-content" class="context-content" aria-live="polite"></div><div class="dialog-actions"><button id="context-refresh" class="button quiet">重新核对</button></div></dialog>
 </body>

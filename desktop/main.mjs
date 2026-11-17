@@ -325,6 +325,17 @@ async function start() {
     const memoryBrowseChecks = await verifyMemoryBrowsing({ store, evaluate: (code) => mainWindow.webContents.executeJavaScript(code) });
     const { verifyContextReview } = await import("./context-smoke.mjs");
     const contextChecks = await verifyContextReview({ store, companion, evaluate: (code) => mainWindow.webContents.executeJavaScript(code) });
+    const { verifyChatModels } = await import("./chat-models-smoke.mjs");
+    const modelChecks = await verifyChatModels({
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href)
+    });
+    const { verifyProfiles } = await import("./profile-smoke.mjs");
+    const profileChecks = await verifyProfiles({
+      evaluate: (code) => mainWindow.webContents.executeJavaScript(code),
+      navigate: (path) => mainWindow.loadURL(new URL(path, origin).href),
+      realModelDirectory: process.env.NIRIA_SMOKE_PROFILE_MODEL || undefined
+    });
     const { verifyRegeneration } = await import("./regeneration-smoke.mjs");
     const regenerationChecks = await verifyRegeneration({ store, companion, evaluate: (code) => mainWindow.webContents.executeJavaScript(code) });
     const { verifyCare } = await import("./care-smoke.mjs");
@@ -387,7 +398,7 @@ async function start() {
       nativeExpressionClearsSilhouette && nativeOriginalRestored &&
       imageTools.alignmentWorker && imageTools.imageProportions && Object.values(historyChecks).every(Boolean) &&
       Object.values(memoryChecks).every(Boolean) && Object.values(memoryBrowseChecks).every(Boolean) &&
-      Object.values(contextChecks).every(Boolean) &&
+      Object.values(contextChecks).every(Boolean) && Object.values(modelChecks).every(Boolean) && Object.values(profileChecks).every(Boolean) &&
       Object.values(regenerationChecks).every(Boolean) &&
       Object.values(careChecks).every(Boolean) &&
       Object.values(chatFaultChecks).every(Boolean) &&
@@ -402,7 +413,7 @@ async function start() {
       Object.values(renderChecks).every(Boolean) && !smokeErrors.length,
       identity, bridge, nodeAbsent, nativeWindow, transparentCorner, collapseWorks, collapsedBounds, expandWorks,
       expressionDisplays, expressionClears, nativeExpressionClearsSilhouette, nativeOriginalRestored, cleanReply, oneChatCall,
-      ...imageTools, ...historyChecks, ...memoryChecks, ...memoryBrowseChecks, ...contextChecks, ...regenerationChecks, ...careChecks, ...chatFaultChecks, ...syncSafetyChecks, ...backupSafetyChecks, ...live2dChecks,
+      ...imageTools, ...historyChecks, ...memoryChecks, ...memoryBrowseChecks, ...contextChecks, ...modelChecks, ...profileChecks, ...regenerationChecks, ...careChecks, ...chatFaultChecks, ...syncSafetyChecks, ...backupSafetyChecks, ...live2dChecks,
       ...backgroundChecks, ...backgroundFailures, ...avatarSafetyChecks, ...imageCallChecks, ...speechSafetyChecks, ...renderChecks,
       contextSyntheticCalls: 4, regenerationSyntheticCalls: 3, careSyntheticCalls: 4, chatFaultSyntheticCalls: 7, imageLocalRequests: 3, speechLocalRequests: 6, errors: smokeErrors };
     await writeFile(process.env.NIRIA_SMOKE_RESULT, JSON.stringify(result, null, 2));

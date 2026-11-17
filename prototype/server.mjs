@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { generateAction, ServiceError } from "./image-service.mjs";
 import { CompanionStore } from "../core/store.mjs";
 import { CompanionService, buildContext, previewContext } from "../core/chat-service.mjs";
+import { listChatModels } from "../core/chat-models.mjs";
+import { ProfileService } from "../core/profile-service.mjs";
 import { contextReviewBasis } from "./public/context-review.js";
 import { BackupService } from "../core/backup-service.mjs";
 import { SyncService } from "../core/sync-service.mjs";
@@ -48,6 +50,8 @@ const files = new Map([
   ["/chat-activity.js", ["chat-activity.js", "text/javascript; charset=utf-8"]],
   ["/forget-review.js", ["forget-review.js", "text/javascript; charset=utf-8"]],
   ["/backup-controls.js", ["backup-controls.js", "text/javascript; charset=utf-8"]],
+  ["/chat-model-picker.js", ["chat-model-picker.js", "text/javascript; charset=utf-8"]],
+  ["/profile-editor.js", ["profile-editor.js", "text/javascript; charset=utf-8"]],
   ["/image-analysis.js", ["image-analysis.js", "text/javascript; charset=utf-8"]],
   ["/animeface.js", ["animeface.js", "text/javascript; charset=utf-8"]],
   ["/vendor/animeface/model.json", ["vendor/animeface/model.json", "application/json; charset=utf-8"]],
@@ -96,13 +100,14 @@ function safeEqual(actual, expected) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function createPrototypeServer({ generator = generateAction, timeoutMs = 180_000, store, companion, sync, speech, vault, backupOptions } = {}) {
+export function createPrototypeServer({ generator = generateAction, timeoutMs = 180_000, modelsTimeoutMs = 20_000, profileTimeoutMs = 90_000, store, companion, sync, speech, vault, backupOptions } = {}) {
   const token = randomBytes(32).toString("hex");
   const voice = speech || (store && new SpeechService(store));
   const synchronization = sync || (store && new SyncService(store, { beforeApply: () => { companion.cancel(); voice.cancel(); } }));
   let busy = false;
   let replacingCompanion = false;
   const connections = new Connections({ companion, speech: voice, synchronization, vault, imageBusy: () => busy });
+  const profiles = store && new ProfileService(store, companion, { timeoutMs: profileTimeoutMs });
   const backup = store && new BackupService(store, {
     ...backupOptions,
     basis: () => createHash("sha256").update(JSON.stringify([store.stateVersion, store.restoreVersion,
@@ -183,7 +188,7 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           if (parameters.has("memories") && parameters.get("memories") !== "none") throw new ServiceError(400, "记忆读取范围无效。");
           const snapshot = store.clientSnapshot({ assets: parameters.get("assets") !== "0", recentMessages: parameters.get("messages") === "recent",
             includeMemories: parameters.get("memories") !== "none" });
-          return json(response, 200, { ...snapshot, avatarKey: store.avatarKey, service: companion.status(), synchronization: synchronization.status(), speech: voice.status(), connections: connections.status(), backup: backup.status() });
+          return json(response, 200, { ...snapshot, avatarKey: store.avatarKey, service: companion.status(), profile: profiles.status(), synchronization: synchronization.status(), speech: voice.status(), connections: connections.status(), backup: backup.status() });
         }
         if (request.method === "GET" && pathname === "/api/messages") {
           const parameters = new URL(request.url, `http://${request.headers.host}`).searchParams;
@@ -200,7 +205,8 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           return json(response, 200, buildContext(store.state));
         }
         if (request.method !== "POST") return json(response, 404, { error: "找不到这个接口。" });
-        const input = await readJson(request, ["/api/avatar", "/api/avatar/live2d", "/api/backup/restore"].includes(pathname) ? 120 * 1024 * 1024 : 1024 * 1024);
+        const input = await readJson(request, ["/api/avatar", "/api/avatar/live2d", "/api/backup/restore"].includes(pathname) ? 120 * 1024 * 1024
+          : pathname === "/api/identity/draft" ? 4 * 1024 * 1024 : 1024 * 1024);
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new ServiceError(400, "请求内容无效。");
         if (pathname === "/api/memories/sources") {
           if (typeof input.id !== "string" || input.id.length > 100 || !Number.isSafeInteger(input.revision)) throw new ServiceError(400, "记忆来源参数无效。");
@@ -219,6 +225,27 @@ export function createPrototypeServer({ generator = generateAction, timeoutMs = 
           throw new ServiceError(409, "伴侣正在恢复，请等候任务结束后再更改同步或配对设置。");
         }
         connections.assertReady();
+        if (pathname === "/api/identity/draft") {
+          const previous = profiles.active, pending = profiles.generate(input);
+          const active = profiles.active !== previous ? profiles.active : null;
+          const disconnect = () => { if (!response.writableFinished) active?.abort(); };
+          response.once("close", disconnect);
+          try { return json(response, 200, await pending); }
+          finally { response.off("close", disconnect); }
+        }
+        if (pathname === "/api/identity/draft/apply") {
+          const result = profiles.apply(input);
+          voice.cancel();
+          return json(response, 200, result);
+        }
+        if (pathname === "/api/connection/models") {
+          const access = connections.chatModelAccess(input), controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), modelsTimeoutMs);
+          const disconnect = () => { if (!response.writableFinished) controller.abort(); };
+          response.once("close", disconnect);
+          try { return json(response, 200, await listChatModels(access, { signal: controller.signal })); }
+          finally { clearTimeout(timeout); response.off("close", disconnect); }
+        }
         if (pathname === "/api/connection") {
           if (companion.active) throw new ServiceError(409, "请先停止正在处理的请求，再切换服务。");
           await connections.configure("chat", input);

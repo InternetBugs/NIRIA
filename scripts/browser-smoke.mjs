@@ -17,6 +17,8 @@ import { verifyFrameRendering } from "../desktop/render-smoke.mjs";
 import { verifyMemoryBrowsing } from "../desktop/memory-browser-smoke.mjs";
 import { verifyBackgroundEditor, verifyBackgroundFailures } from "../desktop/background-smoke.mjs";
 import { verifyContextReview } from "../desktop/context-smoke.mjs";
+import { verifyChatModels } from "../desktop/chat-models-smoke.mjs";
+import { verifyProfiles } from "../desktop/profile-smoke.mjs";
 import { verifyRegeneration } from "../desktop/regeneration-smoke.mjs";
 import { verifyCare } from "../desktop/care-smoke.mjs";
 import { verifyLive2D } from "../desktop/live2d-smoke.mjs";
@@ -336,6 +338,23 @@ try {
         await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
         assert.equal(await evaluate("document.querySelector('#context-dialog').scrollWidth <= document.querySelector('#context-dialog').clientWidth"), true);
         await screenshot("companion-context-mobile.png");
+        await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+      } });
+    const modelChecks = await verifyChatModels({ evaluate,
+      navigate: (path) => call("Page.navigate", { url: new URL(path, appUrl).href }),
+      capture: async () => {
+        await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+        assert.equal(await evaluate("document.querySelector('#settings-dialog').scrollWidth <= document.querySelector('#settings-dialog').clientWidth"), true);
+        await screenshot("companion-model-picker-mobile.png");
+        await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
+      } });
+    const profileChecks = await verifyProfiles({ evaluate,
+      navigate: (path) => call("Page.navigate", { url: new URL(path, appUrl).href }),
+      realModelDirectory: process.argv.includes("--profile-live2d") ? path.join(root, "artifacts/cubism-sdk-5-r5/CubismSdkForWeb-5-r.5/Samples/Resources/Haru") : undefined,
+      capture: async () => {
+        await call("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+        assert.equal(await evaluate("document.querySelector('#profile-dialog').scrollWidth <= document.querySelector('#profile-dialog').clientWidth"), true);
+        await screenshot("companion-profile-draft-mobile.png");
         await call("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1050, deviceScaleFactor: 1, mobile: false });
       } });
     const regenerationChecks = await verifyRegeneration({ store, companion: app.connections.services.chat, evaluate,
@@ -859,7 +878,7 @@ try {
     assert.equal(providerCalls, 6, "background processing and restore are local; explicitly confirmed generation adds one request");
     assert.deepEqual(cdp.errors, []);
     console.log(JSON.stringify({ passed: true, browser: path.basename(executable), mockRequests: providerCalls, contextSyntheticCalls: 4, regenerationSyntheticCalls: 3, careSyntheticCalls: 4,
-      renderChecks, memoryBrowseChecks, contextChecks, regenerationChecks, careChecks, live2dChecks, backgroundChecks, backgroundFailures,
+      renderChecks, memoryBrowseChecks, contextChecks, modelChecks, profileChecks, regenerationChecks, careChecks, live2dChecks, backgroundChecks, backgroundFailures,
       memoryChecks: ["editable memory type and lifetime", "metadata edits retain sources and confirmation", "exact unchanged UTC deadline", "invalid dates rejected", "stale edits rejected", "manual correction retains readable associations", "superseded sources and derivatives excluded from context", "forgetting after correction includes former sources", "paginated forget impact list", "review cancellation without writes", "changed review disables commit and clears old text", "late closed review discarded", "derived memory erasure without model calls"],
       speechRequests: speechCalls,
       securityChecks: ["rotation preparation makes no WebDAV request", "prepared code survives page reload",

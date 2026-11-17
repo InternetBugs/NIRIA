@@ -1,5 +1,10 @@
 #requires -Version 7.0
-param([switch]$SkipFullRegression, [switch]$InspectOnly)
+param(
+  [switch]$SkipFullRegression,
+  [switch]$InspectOnly,
+  [ValidatePattern('^\d+\.\d+\.\d+$')]
+  [string]$UpgradeFromVersion = '0.14.0'
+)
 
 $ErrorActionPreference = 'Stop'
 $niriaWorkspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -8,7 +13,8 @@ $niriaRun = Join-Path $niriaArtifacts ('installer-smoke-' + [Guid]::NewGuid().To
 $niriaInstall = Join-Path $niriaRun '安装测试 Install'
 $niriaData = Join-Path $niriaRun 'data'
 $niriaVersion = (Get-Content -LiteralPath (Join-Path $niriaWorkspace 'package.json') -Raw | ConvertFrom-Json).version
-$niriaOldVersion = '0.14.0'
+$niriaOldVersion = $UpgradeFromVersion
+$niriaFixtureVersion = '0.14.0'
 $niriaDefaultData = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'niria'
 $niriaSentinel = Join-Path $niriaDefaultData ('installer-check-' + [Guid]::NewGuid().ToString('N') + '.txt')
 $niriaSentinelText = [Guid]::NewGuid().ToString('N')
@@ -18,7 +24,7 @@ $niriaLinks = @(
 )
 $niriaMayOwnInstall = $false
 $niriaSentinelCreated = $false
-$niriaReport = [ordered]@{ version = $niriaVersion; oldVersion = $niriaOldVersion; output = $niriaRun; phases = @(); ok = $false }
+$niriaReport = [ordered]@{ version = $niriaVersion; oldVersion = $niriaOldVersion; fixtureVersion = $niriaFixtureVersion; output = $niriaRun; phases = @(); ok = $false }
 
 function Assert-Check([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
@@ -136,6 +142,7 @@ function Uninstall-Niria {
 
 try {
   Assert-Check ($IsWindows -or $env:OS -eq 'Windows_NT') 'Windows is required'
+  Assert-Check ([version]$niriaOldVersion -lt [version]$niriaVersion) 'Upgrade baseline must be older than the current version'
   Assert-ArtifactPath $niriaRun
   Assert-Check (@(Get-NiriaRegistration).Count -eq 0) 'Existing NIRIA installation detected; test did not modify it'
   Assert-Check (@(Get-Process -Name NIRIA -ErrorAction SilentlyContinue).Count -eq 0) 'Close NIRIA before installer testing'
@@ -145,7 +152,8 @@ try {
   }
   $fixtureFile = Join-Path $niriaArtifacts 'storage-v2-upgrade-fixture.json'
   $fixture = Get-Content -LiteralPath $fixtureFile -Raw | ConvertFrom-Json
-  Assert-Check ($fixture.oldVersion -eq $niriaOldVersion) 'Unexpected legacy fixture version'
+  # Keep the actual historical database independent of the installer baseline.
+  Assert-Check ($fixture.oldVersion -eq $niriaFixtureVersion) 'Unexpected legacy fixture version'
   foreach ($name in @('companion.sqlite', 'upgrade-expected.json', 'legacy-backup.niria')) {
     Assert-Check (Test-Path -LiteralPath (Join-Path $fixture.dataDirectory $name)) "Missing legacy fixture: $name"
   }
@@ -165,7 +173,7 @@ try {
       plannedShortcuts = $niriaLinks; defaultDataDirectory = $niriaDefaultData
       defaultDataWrite = 'Unique temporary sentinel file only; no existing files are replaced'
       preflight = @{ existingInstallation = $false; existingShortcut = $false; runningNiria = $false; defaultCompanionDatabase = $false; fixtureAvailable = $true }
-      steps = @('install-0.14.0', 'verify-old-native-data', "upgrade-$niriaVersion", 'compare-installed-runtime',
+      steps = @("install-$niriaOldVersion", 'verify-old-native-data', "upgrade-$niriaVersion", 'compare-installed-runtime',
         'verify-migration-and-restart', 'installed-desktop-regression', 'uninstall-and-check-retention',
         "reinstall-$niriaVersion", 'verify-restart', 'uninstall-and-clean-test-shortcuts')
       executionRequiresExplicitApproval = $true

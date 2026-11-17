@@ -23,7 +23,9 @@ async function run(phase, dataDirectory, baseUrl = "") {
     env: { ...process.env, NIRIA_DESKTOP_DATA_DIR: dataDirectory, NIRIA_SMOKE_PHASE: phase,
       NIRIA_SMOKE_RESULT: resultFile, NIRIA_SMOKE_SCREENSHOT: join(artifacts, phase.startsWith("live2d-real") ? "live2d-real-desktop.png" : "companion-desktop.png"),
       NIRIA_SMOKE_DAV: baseUrl, NIRIA_LIVE2D_MODEL_DIR: process.env.NIRIA_LIVE2D_MODEL_DIR ||
-        join(artifacts, "cubism-sdk-5-r5/CubismSdkForWeb-5-r.5/Samples/Resources/Haru") }
+        join(artifacts, "cubism-sdk-5-r5/CubismSdkForWeb-5-r.5/Samples/Resources/Haru"),
+      NIRIA_SMOKE_PROFILE_MODEL: process.argv.includes("--profile-live2d") ?
+        join(artifacts, "cubism-sdk-5-r5/CubismSdkForWeb-5-r.5/Samples/Resources/Haru") : "" }
   });
   let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { output += chunk; });

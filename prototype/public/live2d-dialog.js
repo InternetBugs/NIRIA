@@ -3,7 +3,7 @@ import { inspectLive2DAvatar, live2DAvatar } from "./live2d-avatar.js";
 import { Live2DPlayer } from "./live2d-player.js";
 import { live2DRuntimeInfo } from "./live2d-runtime.js";
 
-export function live2DDialog({ api, refresh, notice, data, beforeOpen = () => {} }) {
+export function live2DDialog({ api, refresh, notice, data, beforeOpen = () => {}, onAdopt = () => {} }) {
   const $ = (id) => document.getElementById(id), dialog = $("live2d-dialog");
   let files = [], bundle = null, summary = null, basis = null, revision = 0, controller, player;
   let busy = false, saving = false, previewReady = false, stale = false;
@@ -143,6 +143,7 @@ export function live2DDialog({ api, refresh, notice, data, beforeOpen = () => {}
       dialog.close();
       clear();
       await refresh(true);
+      onAdopt();
       notice("Live2D 形象已保存到本机。聊天和记忆继续保留。");
     } catch (error) {
       if (dialog.open) status(error.message || "形象未能保存，请核对当前资料。");

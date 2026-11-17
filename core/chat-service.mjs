@@ -21,13 +21,18 @@ export function chatEndpoint(value) {
   return url.href;
 }
 
-export function validateConnection(input) {
+export function validateChatAccess(input) {
   const baseUrl = text(input?.baseUrl, "API 地址", 2000);
   chatEndpoint(baseUrl);
-  const model = text(input.model, "模型名称", 150);
-  const apiKey = text(input.apiKey || "", "API 密钥", 4096, true);
+  const apiKey = text(input?.apiKey || "", "API 密钥", 4096, true);
   if (/[\r\n]/.test(apiKey)) throw new ServiceError(400, "密钥格式无效。");
-  return { baseUrl, model, apiKey };
+  return { baseUrl, apiKey };
+}
+
+export function validateConnection(input) {
+  const access = validateChatAccess(input);
+  const model = text(input.model, "模型名称", 150);
+  return { ...access, model };
 }
 
 export async function complete(connection, messages, { signal, fetchImpl = fetch } = {}) {
@@ -170,12 +175,12 @@ export class CompanionService {
     return (usage?.[today(date)]?.care || 0) < care.dailyLimit &&
       date.getTime() - Math.max(this.lastInteraction, last ? Date.parse(last.at) : 0) >= care.intervalMinutes * 60_000;
   }
-  async invoke(kind, messages, signal) {
+  async invoke(kind, messages, signal, { purpose } = {}) {
     if (signal?.aborted) throw stopped();
     const connection = this.connection, identityId = this.store.state.identity.id, historyId = this.store.restoreVersion;
     const date = new Date(this.clock());
     const call = { id: randomUUID(), kind, model: connection.model, endpoint: new URL(connection.baseUrl).origin,
-      at: date.toISOString(), day: today(date), status: "pending" };
+      at: date.toISOString(), day: today(date), status: "pending", ...(purpose ? { purpose } : {}) };
     const finish = (status) => {
       if (this.store.state.identity.id !== identityId || this.store.restoreVersion !== historyId ||
           !this.store.state.calls.some((item) => item.id === call.id)) return;
@@ -187,7 +192,8 @@ export class CompanionService {
         state.calls.push(call); state.calls = state.calls.slice(-500);
         state.usage ||= {};
         state.usage[call.day] ||= {};
-        state.usage[call.day][kind] = (state.usage[call.day][kind] || 0) + 1;
+        const usageKind = purpose || kind;
+        state.usage[call.day][usageKind] = (state.usage[call.day][usageKind] || 0) + 1;
         const days = Object.keys(state.usage).sort();
         for (const day of days.slice(0, Math.max(0, days.length - 40))) delete state.usage[day];
       });

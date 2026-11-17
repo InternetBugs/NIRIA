@@ -1,7 +1,7 @@
 import { ServiceError, validateImageConnection } from "../prototype/image-service.mjs";
 import { CREDENTIAL_SLOTS } from "./credential-vault.mjs";
 import { randomUUID } from "node:crypto";
-import { validateConnection } from "./chat-service.mjs";
+import { validateChatAccess, validateConnection } from "./chat-service.mjs";
 import { validateSpeechConnection } from "./speech-service.mjs";
 
 function sameEndpoint(left, right) {
@@ -64,6 +64,22 @@ export class Connections {
     if (kind === "speech") return validateSpeechConnection(data);
     const { connection, auto } = this.services.sync.prepareConfiguration(data);
     return { baseUrl: connection.baseUrl, username: data.username || "", password: data.password || "", auto };
+  }
+  chatModelAccess(input) {
+    this.assertReady();
+    if (!input || typeof input !== "object" || Array.isArray(input) ||
+        (input.reuseSecret !== undefined && typeof input.reuseSecret !== "boolean")) {
+      throw new ServiceError(400, "获取模型列表的配置无效。");
+    }
+    const data = { baseUrl: input.baseUrl, apiKey: input.apiKey };
+    if (input.reuseSecret && !input.apiKey) {
+      const previous = this.current.get("chat");
+      if (!previous || !sameEndpoint(previous.baseUrl, input.baseUrl)) {
+        throw new ServiceError(400, "服务地址已改变，请重新填写密钥，或取消继续使用当前密钥。");
+      }
+      data.apiKey = previous.apiKey || "";
+    }
+    return validateChatAccess(data);
   }
   async configure(kind, input) {
     this.assertReady();

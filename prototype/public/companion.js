@@ -9,6 +9,8 @@ import { contextReview } from "./context-review.js";
 import { chatActivity } from "./chat-activity.js";
 import { live2DDialog } from "./live2d-dialog.js";
 import { backupControls } from "./backup-controls.js";
+import { chatModelPicker } from "./chat-model-picker.js";
+import { profileEditor } from "./profile-editor.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = { token: "", data: null, busy: false, view: "chat", edit: null };
@@ -32,10 +34,23 @@ function beginAvatarImport() {
 let avatarWrite = Promise.resolve();
 let draftRevision = 0;
 const activity = chatActivity({ api });
+const modelPicker = chatModelPicker({ api });
 const interact = () => { if (state.token) activity.changed(); };
 window.addEventListener("pagehide", () => { leaving = true; activity.stop(); stopAudio(); avatarController?.abort(); ++avatarImport; }, { once: true });
 const contexts = contextReview({ api, refresh, data: () => state.data, draft: () => $("#message-input").value });
-const live2d = live2DDialog({ api, refresh, notice, data: () => state.data, beforeOpen: beginAvatarImport });
+const profiles = profileEditor({ api, refresh, notice, data: () => state.data, snapshot: async () => {
+  const current = state.data;
+  if (!current.avatar) throw new Error("请先导入并采用图片或 Live2D 形象。");
+  await avatarPlayer.update(current);
+  if (current.avatarKey !== state.data.avatarKey) throw new Error("形象已改变，请重新打开资料生成。");
+  const source = $("#avatar-canvas"), pixels = source.getContext("2d").getImageData(0, 0, source.width, source.height).data;
+  if (!pixels.some((value, index) => index % 4 === 3 && value > 0)) throw new Error("形象尚未成功显示，请先完成形象预览。");
+  const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 768;
+  const context = canvas.getContext("2d"); context.fillStyle = "#fff"; context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/png");
+} });
+const live2d = live2DDialog({ api, refresh, notice, data: () => state.data, beforeOpen: beginAvatarImport, onAdopt: () => profiles.offerAvatar() });
 const renderSecurity = syncSecurity({ api, refresh, notice });
 const renderBackup = backupControls({ api, refresh, data: () => state.data, notice, download, beforeRestore: stopAudio });
 const history = chatHistory({ api, refresh, renderMessage });
@@ -110,6 +125,7 @@ function setView(view) {
   if (state.data) memories.update(state.data.memoryWindow, view === "memories");
 }
 function openSettings(tab = "connection") {
+  modelPicker.reset();
   const { identity, settings, service } = state.data;
   const connections = state.data.connections;
   for (const kind of ["chat", "speech", "sync"]) {
@@ -150,6 +166,7 @@ function openSettings(tab = "connection") {
   if (!$("#settings-dialog").open) $("#settings-dialog").showModal();
 }
 function setTab(tab) {
+  if (tab !== "connection") modelPicker.reset();
   for (const button of document.querySelectorAll("[data-tab]")) button.setAttribute("aria-selected", String(button.dataset.tab === tab));
   for (const section of document.querySelectorAll("[data-settings]")) section.hidden = section.dataset.settings !== tab;
 }
@@ -303,7 +320,7 @@ function renderCalls() {
   for (const call of state.data.calls.slice(-30).toReversed()) {
     const item = element("div", "call-item");
     const label = call.kind === "image" ? `图片生成 · ${{ blink: "闭眼", smile: "微笑", curious: "疑惑", shy: "害羞" }[call.action] || "动作"}`
-      : { chat: "聊天", memory: "记忆整理", care: "主动关心", test: "连接测试", speech: "语音朗读" }[call.kind] || call.kind;
+      : call.purpose === "profile" ? "资料生成" : { chat: "聊天", memory: "记忆整理", care: "主动关心", test: "连接测试", speech: "语音朗读" }[call.kind] || call.kind;
     const info = element("span", "", `${label} · ${dateLabel(call.at)}`);
     info.append(element("small", "", `${call.model} · ${call.endpoint}`));
     item.append(info, element("span", "", { pending: "处理中", completed: "已返回", failed: "失败", unknown: "结果未知" }[call.status]));
@@ -316,7 +333,7 @@ function render() {
   $("#companion-name").textContent = identity.name;
   $("#chat-title").textContent = `和 ${identity.name} 聊聊`;
   $("#relationship-caption").textContent = identity.relationship;
-  $("#connection-status").textContent = service.busy || state.busy ? "正在回复 · 可以停止本次请求" : service.connected ? `已连接 ${service.model}` : "配置对话服务，开始第一次聊天。";
+  $("#connection-status").textContent = state.data.profile?.busy ? "正在生成资料 · 可以在资料窗口停止" : service.busy || state.busy ? "正在回复 · 可以停止本次请求" : service.connected ? `已连接 ${service.model}` : "配置对话服务，开始第一次聊天。";
   $("#care-status").textContent = settings.care.enabled ? `主动关心 · 间隔至少 ${settings.care.intervalMinutes} 分钟` : "主动关心已关闭";
   $("#request-hint").textContent = settings.autoMemory && settings.memoryDailyLimit ? `聊天 1 次 · 记忆整理每天最多 ${settings.memoryDailyLimit} 次` : "每次聊天 1 次模型请求";
   $("#send-message").disabled = state.busy || service.busy;
@@ -326,6 +343,7 @@ function render() {
   memories.update(state.data.memoryWindow, state.view === "memories");
   contexts.update();
   live2d.update();
+  profiles.update();
   forgetting.update();
   renderCalls();
   renderSync();
@@ -382,6 +400,10 @@ $("#add-memory").addEventListener("click", () => edit("memory", null));
 $("#open-live2d").addEventListener("click", () => {
   try { live2d.open(); } catch (error) { notice(error.message, true); }
 });
+$("#identity-import-live2d").addEventListener("click", () => {
+  try { live2d.open(); } catch (error) { notice(error.message, true); }
+});
+$("#identity-import-image").addEventListener("click", () => $("#avatar-image").click());
 $("#message-input").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); $("#composer").requestSubmit(); }
 });
@@ -471,6 +493,7 @@ function saveImportedAvatar(avatar, operation) {
       avatarImportBasis.expectedAvatarKey = accepted.avatarKey;
     }
     await refresh(true);
+    profiles.offerAvatar();
     return true;
   });
   avatarWrite = task.catch(() => {});
